@@ -4,7 +4,7 @@ set -o pipefail
 green='\033[0;32m'
 nocolor='\033[0m'
 
-deps="ninja patchelf unzip curl pip flex bison zip git perl glslangValidator patch"
+deps="ninja patchelf unzip curl pip flex bison zip git perl glslangValidator python3"
 workdir="$(pwd)/turnip_workdir"
 ndkver="android-ndk-r28"
 target_sdk="36" 
@@ -25,37 +25,24 @@ prepare_ndk(){
     export ANDROID_NDK_HOME="$workdir/$ndkver"
 }
 
-build_driver() {
-    local repo_url="https://gitlab.freedesktop.org/mesa/mesa.git"
-    local branch="main"
-    local build_name="Main-26.1-Autotuner-V49"
+compile_mesa() {
+    local repo_url="https://gitlab.freedesktop.org/zdobersek/mesa-fork.git"
+    local branch="work/tu_kgsl_timeline_sync"
+    local build_name="Turnip-Zdobersek-TimelineSync"
+    local output_tag="V70-Zdobersek-Timeline"
 
-    echo -e "${green}Building: $build_name${nocolor}"
+    echo -e "${green}Cloning: $repo_url (Branch: $branch)${nocolor}"
     
     cd "$workdir"
     if [ -d mesa ]; then rm -rf mesa; fi
     
+    # Clone específico da branch solicitada
     git clone --depth 100 -b "$branch" "$repo_url" mesa
     cd mesa
     git config user.email "ci@turnip.builder" && git config user.name "Turnip CI Builder"
 
-    echo -e "${green}Downloading Autotuner Patch (!37802.diff)...${nocolor}"
-    curl -L "https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/37802.diff" -o autotuner.patch
+    echo -e "${green}Building: $build_name (Clean Build)${nocolor}"
     
-    echo -e "${green}Applying Patch via GNU Patch (Fuzz enabled)...${nocolor}"
-    if patch -p1 --fuzz=3 --forward < autotuner.patch; then
-        echo -e "${green}Patch Applied!${nocolor}"
-        desc_extra="+ Autotuner Rewrite"
-    else
-        echo "Patch Failed (Conflict too large). clean 26.1.0 build."
-        git checkout .
-        desc_extra="(Autotuner Skipped)"
-    fi
-
-    echo "26.1.0-devel" > VERSION
-
-    grep -l "tu_bo_init_new_cached" src/freedreno/vulkan/tu_query*.cc | xargs sed -i 's/tu_bo_init_new_cached/tu_bo_init_new/g' || true
-
     mkdir -p subprojects && cd subprojects
     rm -rf spirv-tools spirv-headers
     git clone --depth=1 https://github.com/KhronosGroup/SPIRV-Tools.git spirv-tools
@@ -63,6 +50,8 @@ build_driver() {
     cd ..
 
     local build_dir="$workdir/mesa/build"
+    rm -rf "$build_dir"
+
     local ndk_bin="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
     local ndk_sys="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
     local cver="35"
@@ -110,30 +99,28 @@ EOF
     local lib="$build_dir/src/freedreno/vulkan/libvulkan_freedreno.so"
     if [ ! -f "$lib" ]; then echo "Build Failed"; exit 1; fi
     
-    local pkg_dir="$workdir/pkg_$build_name"
+    local pkg_dir="$workdir/pkg_$output_tag"
     mkdir -p "$pkg_dir"
     cp "$lib" "$pkg_dir/vulkan.ad07XX.so"
     cd "$pkg_dir"
     patchelf --set-soname "vulkan.adreno.so" vulkan.ad07XX.so
     
-    local hash=$(git -C "$workdir/mesa" rev-parse --short HEAD)
-    
     echo "{
   \"schemaVersion\": 1,
-  \"name\": \"Turnip-${build_name}-${hash}\",
-  \"description\": \"Mesa 26.1.0 ${desc_extra} + UE4 Fix\",
-  \"author\": \"mesa-ci\",
-  \"driverVersion\": \"Mesa-V49-26.1.0\",
+  \"name\": \"$build_name\",
+  \"description\": \"Clean build from zdobersek/mesa-fork (tu_kgsl_timeline_sync)\",
+  \"author\": \"StevenMX\",
+  \"packageVersion\": \"1\",
+  \"vendor\": \"Mesa\",
+  \"driverVersion\": \"$output_tag\",
+  \"minApi\": 28,
   \"libraryName\": \"vulkan.ad07XX.so\"
 }" > meta.json
     
-    zip -9 "$workdir/Turnip-${build_name}-${hash}.zip" vulkan.ad07XX.so meta.json
-    echo -e "${green}Done: Turnip-${build_name}-${hash}.zip${nocolor}"
-    
-    echo "Turnip-${build_name}-${hash}" > "$workdir/tag"
-    echo "Turnip V49" > "$workdir/release"
+    zip -9 "$workdir/Turnip-${output_tag}.zip" vulkan.ad07XX.so meta.json
+    echo -e "${green}Done: Turnip-${output_tag}.zip${nocolor}"
 }
 
 check_deps
 prepare_ndk
-build_driver
+compile_mesa
