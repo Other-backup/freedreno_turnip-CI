@@ -26,22 +26,27 @@ prepare_ndk(){
 }
 
 compile_mesa() {
-    local repo_url="https://gitlab.freedesktop.org/zdobersek/mesa-fork.git"
-    local branch="work/tu_kgsl_timeline_sync"
-    local build_name="Turnip-Zdobersek-TimelineSync"
-    local output_tag="V70-Zdobersek-Timeline"
+    local repo_url="https://gitlab.freedesktop.org/mesa/mesa.git"
+    local branch="main"
+    local build_name="Turnip-Main-MR39751"
+    local output_tag="V71-Main-NativeTimeline"
 
-    echo -e "${green}Cloning: $repo_url (Branch: $branch)${nocolor}"
+    echo -e "${green}Cloning Mesa Main...${nocolor}"
     
     cd "$workdir"
     if [ -d mesa ]; then rm -rf mesa; fi
     
-    # Clone específico da branch solicitada
     git clone --depth 100 -b "$branch" "$repo_url" mesa
     cd mesa
     git config user.email "ci@turnip.builder" && git config user.name "Turnip CI Builder"
 
-    echo -e "${green}Building: $build_name (Clean Build)${nocolor}"
+    echo -e "${green}Fetching and Merging MR 39751 (Native Timeline Sync)...${nocolor}"
+    # Fetch the specific Merge Request head
+    git fetch origin refs/merge-requests/39751/head:mr-39751
+    # Merge into main
+    git merge mr-39751 --no-edit
+
+    echo -e "${green}Building: $build_name${nocolor}"
     
     mkdir -p subprojects && cd subprojects
     rm -rf spirv-tools spirv-headers
@@ -108,7 +113,7 @@ EOF
     echo "{
   \"schemaVersion\": 1,
   \"name\": \"$build_name\",
-  \"description\": \"Clean build from zdobersek/mesa-fork (tu_kgsl_timeline_sync)\",
+  \"description\": \"Mesa Main merged with MR 39751 (Native KGSL Timeline)\",
   \"author\": \"StevenMX\",
   \"packageVersion\": \"1\",
   \"vendor\": \"Mesa\",
