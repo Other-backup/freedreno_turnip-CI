@@ -25,129 +25,16 @@ prepare_ndk(){
     export ANDROID_NDK_HOME="$workdir/$ndkver"
 }
 
-inject_mods() {
-    echo -e "${green}Injecting Mods (Smart Find)...${nocolor}"
-    
-    # Python script atualizado para ENCONTRAR os arquivos onde quer que estejam
-    cat << 'EOF_PYTHON' > injector.py
-import re
-import os
-import sys
-
-def find_file(filename, search_path="."):
-    for root, dirs, files in os.walk(search_path):
-        if filename in files:
-            return os.path.join(root, filename)
-    return None
-
-# Tenta encontrar os arquivos automaticamente
-print("Searching for source files...")
-device_file = find_file("tu_device.cc")
-phys_dev_file = find_file("tu_physical_device.cc")
-
-if not device_file:
-    print("Error: tu_device.cc not found!")
-    sys.exit(1)
-if not phys_dev_file:
-    print("Error: tu_physical_device.cc not found!")
-    sys.exit(1)
-
-print(f"Found tu_device.cc at: {device_file}")
-print(f"Found tu_physical_device.cc at: {phys_dev_file}")
-
-# --- MOD 1: INJECT VERSION & WRAPPER VAR ---
-with open(device_file, 'r') as f:
-    dev_content = f.read()
-
-if 'setenv("WRAPPER_VK_VERSION"' not in dev_content:
-    print("Injecting WRAPPER_VK_VERSION...")
-    dev_content = dev_content.replace(
-        "VkResult\ntu_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,",
-        "VkResult\ntu_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,\n   const VkAllocationCallbacks *pAllocator,\n   VkInstance *pInstance)\n{\n   setenv(\"WRAPPER_VK_VERSION\", \"1.4.340\", 1);\n"
-    )
-    # Limpeza caso a substituição duplique algo (segurança)
-    dev_content = dev_content.replace(
-        "   const VkAllocationCallbacks *pAllocator,\n   VkInstance *pInstance)\n{\n   setenv(\"WRAPPER_VK_VERSION\", \"1.4.340\", 1);\n\n   const VkAllocationCallbacks *pAllocator,\n   VkInstance *pInstance)",
-        ""
-    )
-
-with open(device_file, 'w') as f:
-    f.write(dev_content)
-
-# --- MOD 2: UNLOCK FEATURES & FORCE VERSION ---
-with open(phys_dev_file, 'r') as f:
-    phys_content = f.read()
-
-print("Forcing API Version to 1.4.340 in Physical Device...")
-phys_content = re.sub(
-    r"return VK_MAKE_VERSION\(1, [0-9]+, [0-9]+\);",
-    "return VK_MAKE_VERSION(1, 4, 340);",
-    phys_content
-)
-
-features_1_1 = [
-    "storageBuffer16BitAccess", "uniformAndStorageBuffer16BitAccess", "storagePushConstant16",
-    "storageInputOutput16", "multiview", "multiviewGeometryShader", "multiviewTessellationShader",
-    "variablePointersStorageBuffer", "variablePointers", "protectedMemory", "samplerYcbcrConversion",
-    "shaderDrawParameters"
-]
-
-features_1_2 = [
-    "samplerMirrorClampToEdge", "drawIndirectCount", "storageBuffer8BitAccess", "uniformAndStorageBuffer8BitAccess",
-    "storagePushConstant8", "shaderBufferInt64Atomics", "shaderSharedInt64Atomics", "shaderFloat16",
-    "shaderInt8", "descriptorIndexing", "shaderInputAttachmentArrayDynamicIndexing",
-    "shaderUniformTexelBufferArrayDynamicIndexing", "shaderStorageTexelBufferArrayDynamicIndexing",
-    "shaderUniformBufferArrayNonUniformIndexing", "shaderSampledImageArrayNonUniformIndexing",
-    "shaderStorageBufferArrayNonUniformIndexing", "shaderStorageImageArrayNonUniformIndexing",
-    "shaderInputAttachmentArrayNonUniformIndexing", "shaderUniformTexelBufferArrayNonUniformIndexing",
-    "shaderStorageTexelBufferArrayNonUniformIndexing", "descriptorBindingUniformBufferUpdateAfterBind",
-    "descriptorBindingSampledImageUpdateAfterBind", "descriptorBindingStorageImageUpdateAfterBind",
-    "descriptorBindingStorageBufferUpdateAfterBind", "descriptorBindingUniformTexelBufferUpdateAfterBind",
-    "descriptorBindingStorageTexelBufferUpdateAfterBind", "descriptorBindingUpdateUnusedWhilePending",
-    "descriptorBindingPartiallyBound", "descriptorBindingVariableDescriptorCount", "runtimeDescriptorArray",
-    "samplerFilterMinmax", "scalarBlockLayout", "imagelessFramebuffer", "uniformBufferStandardLayout",
-    "shaderSubgroupExtendedTypes", "separateDepthStencilLayouts", "hostQueryReset", "timelineSemaphore",
-    "bufferDeviceAddress", "bufferDeviceAddressCaptureReplay", "bufferDeviceAddressMultiDevice",
-    "vulkanMemoryModel", "vulkanMemoryModelDeviceScope", "vulkanMemoryModelAvailabilityVisibilityChains",
-    "shaderOutputViewportIndex", "shaderOutputLayer", "subgroupBroadcastDynamicId"
-]
-
-features_1_3 = [
-    "robustImageAccess", "inlineUniformBlock", "descriptorBindingInlineUniformBlockUpdateAfterBind",
-    "pipelineCreationCacheControl", "privateData", "shaderDemoteToHelperInvocation", "shaderTerminateInvocation",
-    "subgroupSizeControl", "computeFullSubgroups", "synchronization2", "textureCompressionASTC_HDR",
-    "shaderZeroInitializeWorkgroupMemory", "dynamicRendering", "shaderIntegerDotProduct", "maintenance4"
-]
-
-def inject_features(content, struct_name, feat_list, struct_type):
-    code = "".join([f"      f->{feat} = VK_TRUE;\n" for feat in feat_list])
-    pattern = rf"(case {struct_name}:[\s\S]*?)(\s+break;)"
-    replacement = f"\\1\n      {struct_type} *f = ({struct_type} *)ext;\n{code}\\2"
-    return re.sub(pattern, replacement, content, count=1)
-
-print("Injecting Features...")
-phys_content = inject_features(phys_content, "VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES", features_1_1, "VkPhysicalDeviceVulkan11Features")
-phys_content = inject_features(phys_content, "VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES", features_1_2, "VkPhysicalDeviceVulkan12Features")
-phys_content = inject_features(phys_content, "VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES", features_1_3, "VkPhysicalDeviceVulkan13Features")
-
-with open(phys_dev_file, 'w') as f:
-    f.write(phys_content)
-EOF_PYTHON
-    
-    python3 injector.py
-}
-
 compile_mesa() {
     local repo_url="https://gitlab.freedesktop.org/mesa/mesa.git"
     local branch="main"
-    local build_name="Turnip-A8xx-Reverted-1.4.340"
-    local output_tag="V78-A8xx-Reverted-1.4.340"
+    local build_name="Turnip-A8xx-FixFreeze-Native"
+    local output_tag="V78-A8xx-FixFreeze"
 
     cd "$workdir"
     if [ -d mesa ]; then rm -rf mesa; fi
     
-    # Clone deeper just in case
-    git clone --depth 500 -b "$branch" "$repo_url" mesa
+    git clone --depth 100 -b "$branch" "$repo_url" mesa
     cd mesa
     git config user.email "ci@turnip.builder" && git config user.name "Turnip CI Builder"
 
@@ -158,23 +45,13 @@ compile_mesa() {
         echo -e "${green}Applying tu_gen8.patch...${nocolor}"
         patch -p1 --fuzz=4 --ignore-whitespace < "$patch_file" || echo "Warning: Patch loose match"
         
-        echo -e "${green}Reverting Timeline Semaphore & Version Hack...${nocolor}"
-        # Revert Patch 11 (Timeline Sync)
+        echo -e "${green}Reverting Timeline Semaphore (Fix Freeze) & Version Hack...${nocolor}"
         sed -n '/^Subject: \[PATCH 11\/22\]/,/^From /p' "$patch_file" | head -n -1 | patch -p1 -R || echo "Failed Revert 11"
-        
-        # Revert Patch 16 (Version Hack)
         sed -n '/^Subject: \[PATCH 16\/22\]/,/^From /p' "$patch_file" | head -n -1 | patch -p1 -R || echo "Failed Revert 16"
     else
         echo "Error: tu_gen8.patch not found."
         exit 1
     fi
-
-    # Run the Smart Injector
-    inject_mods
-
-    # Double check version in device.cc (safe fallback)
-    find . -name "tu_device.cc" -exec sed -i 's/VK_MAKE_VERSION(1, 3, [0-9]*)/VK_MAKE_VERSION(1, 4, 340)/g' {} + || true
-    find . -name "tu_device.cc" -exec sed -i 's/VK_MAKE_VERSION(1, 4, [0-9]*)/VK_MAKE_VERSION(1, 4, 340)/g' {} + || true
 
     echo -e "${green}Building...${nocolor}"
     
@@ -243,7 +120,7 @@ EOF
     echo "{
   \"schemaVersion\": 1,
   \"name\": \"$build_name\",
-  \"description\": \"Mesa Main + A8xx (Fix Timelines) + 1.4.340\",
+  \"description\": \"Mesa Main + A8xx (Fix Freeze) - Native Version\",
   \"author\": \"StevenMX\",
   \"packageVersion\": \"1\",
   \"vendor\": \"Mesa\",
