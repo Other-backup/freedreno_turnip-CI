@@ -25,16 +25,41 @@ prepare_ndk(){
     export ANDROID_NDK_HOME="$workdir/$ndkver"
 }
 
-inject_feature_unlocker() {
-    echo -e "${green}Injecting Vulkan 1.1/1.2/1.3/1.4 Feature Unlocker...${nocolor}"
+inject_mods() {
+    echo -e "${green}Injecting Mods...${nocolor}"
     
-    cat << 'EOF_PYTHON' > unlock_features.py
-import sys
+    cat << 'EOF_PYTHON' > injector.py
 import re
+import os
 
-file_path = "src/freedreno/vulkan/tu_device.cc"
+phys_dev_file = "src/freedreno/vulkan/tu_physical_device.cc"
+device_file = "src/freedreno/vulkan/tu_device.cc"
 
-# List of all features to force enabled
+with open(device_file, 'r') as f:
+    dev_content = f.read()
+
+if 'setenv("WRAPPER_VK_VERSION"' not in dev_content:
+    dev_content = dev_content.replace(
+        "VkResult\ntu_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,",
+        "VkResult\ntu_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,\n   const VkAllocationCallbacks *pAllocator,\n   VkInstance *pInstance)\n{\n   setenv(\"WRAPPER_VK_VERSION\", \"1.4.340\", 1);\n"
+    )
+    dev_content = dev_content.replace(
+        "   const VkAllocationCallbacks *pAllocator,\n   VkInstance *pInstance)\n{\n   setenv(\"WRAPPER_VK_VERSION\", \"1.4.340\", 1);\n\n   const VkAllocationCallbacks *pAllocator,\n   VkInstance *pInstance)",
+        ""
+    )
+
+with open(device_file, 'w') as f:
+    f.write(dev_content)
+
+with open(phys_dev_file, 'r') as f:
+    phys_content = f.read()
+
+phys_content = re.sub(
+    r"return VK_MAKE_VERSION\(1, [0-9]+, [0-9]+\);",
+    "return VK_MAKE_VERSION(1, 4, 340);",
+    phys_content
+)
+
 features_1_1 = [
     "storageBuffer16BitAccess", "uniformAndStorageBuffer16BitAccess", "storagePushConstant16",
     "storageInputOutput16", "multiview", "multiviewGeometryShader", "multiviewTessellationShader",
@@ -69,50 +94,29 @@ features_1_3 = [
     "shaderZeroInitializeWorkgroupMemory", "dynamicRendering", "shaderIntegerDotProduct", "maintenance4"
 ]
 
-# Create code blocks
-code_1_1 = "".join([f"      f->{feat} = VK_TRUE;\n" for feat in features_1_1])
-code_1_2 = "".join([f"      f->{feat} = VK_TRUE;\n" for feat in features_1_2])
-code_1_3 = "".join([f"      f->{feat} = VK_TRUE;\n" for feat in features_1_3])
+def inject_features(content, struct_name, feat_list, struct_type):
+    code = "".join([f"      f->{feat} = VK_TRUE;\n" for feat in feat_list])
+    pattern = rf"(case {struct_name}:[\s\S]*?)(\s+break;)"
+    replacement = f"\\1\n      {struct_type} *f = ({struct_type} *)ext;\n{code}\\2"
+    return re.sub(pattern, replacement, content, count=1)
 
-with open(file_path, 'r') as f:
-    content = f.read()
+phys_content = inject_features(phys_content, "VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES", features_1_1, "VkPhysicalDeviceVulkan11Features")
+phys_content = inject_features(phys_content, "VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES", features_1_2, "VkPhysicalDeviceVulkan12Features")
+phys_content = inject_features(phys_content, "VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES", features_1_3, "VkPhysicalDeviceVulkan13Features")
 
-# Pattern to find the switch statement in tu_GetPhysicalDeviceFeatures2
-# We look for the case statements and inject our forcing code before the break
-
-# Inject 1.1
-if "VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES" in content:
-    pattern = r"(case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES:[\s\S]*?)(\s+break;)"
-    replacement = f"\\1\n      VkPhysicalDeviceVulkan11Features *f = (VkPhysicalDeviceVulkan11Features *)ext;\n{code_1_1}\\2"
-    content = re.sub(pattern, replacement, content, count=1)
-
-# Inject 1.2
-if "VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES" in content:
-    pattern = r"(case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES:[\s\S]*?)(\s+break;)"
-    replacement = f"\\1\n      VkPhysicalDeviceVulkan12Features *f = (VkPhysicalDeviceVulkan12Features *)ext;\n{code_1_2}\\2"
-    content = re.sub(pattern, replacement, content, count=1)
-
-# Inject 1.3
-if "VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES" in content:
-    pattern = r"(case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES:[\s\S]*?)(\s+break;)"
-    replacement = f"\\1\n      VkPhysicalDeviceVulkan13Features *f = (VkPhysicalDeviceVulkan13Features *)ext;\n{code_1_3}\\2"
-    content = re.sub(pattern, replacement, content, count=1)
-
-with open(file_path, 'w') as f:
-    f.write(content)
+with open(phys_dev_file, 'w') as f:
+    f.write(phys_content)
 EOF_PYTHON
     
-    python3 unlock_features.py
+    python3 injector.py
 }
 
 compile_mesa() {
     local repo_url="https://gitlab.freedesktop.org/mesa/mesa.git"
     local branch="main"
-    local build_name="Turnip-A8xx-Ultimate"
-    local output_tag="V76-A8xx-Ult-VK1.4"
+    local build_name="Turnip-A8xx-Reverted-1.4.340"
+    local output_tag="V78-A8xx-Reverted-1.4.340"
 
-    echo -e "${green}Cloning Mesa Main...${nocolor}"
-    
     cd "$workdir"
     if [ -d mesa ]; then rm -rf mesa; fi
     
@@ -120,29 +124,27 @@ compile_mesa() {
     cd mesa
     git config user.email "ci@turnip.builder" && git config user.name "Turnip CI Builder"
 
-    # 1. APPLY A8XX PATCH
-    if [ -f "$workdir/../tu_gen8.patch" ]; then
+    local patch_file="$workdir/../tu_gen8.patch"
+    if [ ! -f "$patch_file" ]; then patch_file="tu_gen8.patch"; fi
+    
+    if [ -f "$patch_file" ]; then
         echo -e "${green}Applying tu_gen8.patch...${nocolor}"
-        patch -p1 --fuzz=4 --ignore-whitespace < "$workdir/../tu_gen8.patch" || echo "Warning: Patch had loose matches"
-    elif [ -f "tu_gen8.patch" ]; then
-         echo -e "${green}Applying tu_gen8.patch...${nocolor}"
-         patch -p1 --fuzz=4 --ignore-whitespace < "tu_gen8.patch" || echo "Warning: Patch had loose matches"
+        patch -p1 --fuzz=4 --ignore-whitespace < "$patch_file" || echo "Warning: Patch loose match"
+        
+        echo -e "${green}Reverting Timeline Semaphore & Version Hack...${nocolor}"
+        sed -n '/^Subject: \[PATCH 11\/22\]/,/^From /p' "$patch_file" | head -n -1 | patch -p1 -R || echo "Failed Revert 11"
+        sed -n '/^Subject: \[PATCH 16\/22\]/,/^From /p' "$patch_file" | head -n -1 | patch -p1 -R || echo "Failed Revert 16"
     else
         echo "Error: tu_gen8.patch not found."
         exit 1
     fi
 
-    # 2. FORCE VK 1.4.340
-    echo -e "${green}Setting Driver Version to Vulkan 1.4.340...${nocolor}"
+    inject_mods
+
     sed -i 's/VK_MAKE_VERSION(1, 3, [0-9]*)/VK_MAKE_VERSION(1, 4, 340)/g' src/freedreno/vulkan/tu_device.cc || true
     sed -i 's/VK_MAKE_VERSION(1, 4, [0-9]*)/VK_MAKE_VERSION(1, 4, 340)/g' src/freedreno/vulkan/tu_device.cc || true
-    sed -i 's/VK_MAKE_VERSION(1, 3, [0-9]*)/VK_MAKE_VERSION(1, 4, 340)/g' src/freedreno/vulkan/tu_physical_device.cc || true
-    sed -i 's/VK_MAKE_VERSION(1, 4, [0-9]*)/VK_MAKE_VERSION(1, 4, 340)/g' src/freedreno/vulkan/tu_physical_device.cc || true
 
-    # 3. UNLOCK ALL FEATURES (1.1, 1.2, 1.3)
-    inject_feature_unlocker
-
-    echo -e "${green}Building: $build_name${nocolor}"
+    echo -e "${green}Building...${nocolor}"
     
     mkdir -p subprojects && cd subprojects
     rm -rf spirv-tools spirv-headers
@@ -209,7 +211,7 @@ EOF
     echo "{
   \"schemaVersion\": 1,
   \"name\": \"$build_name\",
-  \"description\": \"Mesa Main + A8xx + VK1.4.340 + All Features Unlocked\",
+  \"description\": \"Mesa Main + A8xx (Reverted Timeline & VerHack) + 1.4.340\",
   \"author\": \"StevenMX\",
   \"packageVersion\": \"1\",
   \"vendor\": \"Mesa\",
