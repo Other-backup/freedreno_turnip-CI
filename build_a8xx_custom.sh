@@ -26,23 +26,46 @@ prepare_ndk(){
 }
 
 inject_mods() {
-    echo -e "${green}Injecting Mods...${nocolor}"
+    echo -e "${green}Injecting Mods (Smart Find)...${nocolor}"
     
+    # Python script atualizado para ENCONTRAR os arquivos onde quer que estejam
     cat << 'EOF_PYTHON' > injector.py
 import re
 import os
+import sys
 
-phys_dev_file = "src/freedreno/vulkan/tu_physical_device.cc"
-device_file = "src/freedreno/vulkan/tu_device.cc"
+def find_file(filename, search_path="."):
+    for root, dirs, files in os.walk(search_path):
+        if filename in files:
+            return os.path.join(root, filename)
+    return None
 
+# Tenta encontrar os arquivos automaticamente
+print("Searching for source files...")
+device_file = find_file("tu_device.cc")
+phys_dev_file = find_file("tu_physical_device.cc")
+
+if not device_file:
+    print("Error: tu_device.cc not found!")
+    sys.exit(1)
+if not phys_dev_file:
+    print("Error: tu_physical_device.cc not found!")
+    sys.exit(1)
+
+print(f"Found tu_device.cc at: {device_file}")
+print(f"Found tu_physical_device.cc at: {phys_dev_file}")
+
+# --- MOD 1: INJECT VERSION & WRAPPER VAR ---
 with open(device_file, 'r') as f:
     dev_content = f.read()
 
 if 'setenv("WRAPPER_VK_VERSION"' not in dev_content:
+    print("Injecting WRAPPER_VK_VERSION...")
     dev_content = dev_content.replace(
         "VkResult\ntu_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,",
         "VkResult\ntu_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,\n   const VkAllocationCallbacks *pAllocator,\n   VkInstance *pInstance)\n{\n   setenv(\"WRAPPER_VK_VERSION\", \"1.4.340\", 1);\n"
     )
+    # Limpeza caso a substituição duplique algo (segurança)
     dev_content = dev_content.replace(
         "   const VkAllocationCallbacks *pAllocator,\n   VkInstance *pInstance)\n{\n   setenv(\"WRAPPER_VK_VERSION\", \"1.4.340\", 1);\n\n   const VkAllocationCallbacks *pAllocator,\n   VkInstance *pInstance)",
         ""
@@ -51,9 +74,11 @@ if 'setenv("WRAPPER_VK_VERSION"' not in dev_content:
 with open(device_file, 'w') as f:
     f.write(dev_content)
 
+# --- MOD 2: UNLOCK FEATURES & FORCE VERSION ---
 with open(phys_dev_file, 'r') as f:
     phys_content = f.read()
 
+print("Forcing API Version to 1.4.340 in Physical Device...")
 phys_content = re.sub(
     r"return VK_MAKE_VERSION\(1, [0-9]+, [0-9]+\);",
     "return VK_MAKE_VERSION(1, 4, 340);",
@@ -100,6 +125,7 @@ def inject_features(content, struct_name, feat_list, struct_type):
     replacement = f"\\1\n      {struct_type} *f = ({struct_type} *)ext;\n{code}\\2"
     return re.sub(pattern, replacement, content, count=1)
 
+print("Injecting Features...")
 phys_content = inject_features(phys_content, "VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES", features_1_1, "VkPhysicalDeviceVulkan11Features")
 phys_content = inject_features(phys_content, "VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES", features_1_2, "VkPhysicalDeviceVulkan12Features")
 phys_content = inject_features(phys_content, "VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES", features_1_3, "VkPhysicalDeviceVulkan13Features")
@@ -120,7 +146,8 @@ compile_mesa() {
     cd "$workdir"
     if [ -d mesa ]; then rm -rf mesa; fi
     
-    git clone --depth 100 -b "$branch" "$repo_url" mesa
+    # Clone deeper just in case
+    git clone --depth 500 -b "$branch" "$repo_url" mesa
     cd mesa
     git config user.email "ci@turnip.builder" && git config user.name "Turnip CI Builder"
 
@@ -132,17 +159,22 @@ compile_mesa() {
         patch -p1 --fuzz=4 --ignore-whitespace < "$patch_file" || echo "Warning: Patch loose match"
         
         echo -e "${green}Reverting Timeline Semaphore & Version Hack...${nocolor}"
+        # Revert Patch 11 (Timeline Sync)
         sed -n '/^Subject: \[PATCH 11\/22\]/,/^From /p' "$patch_file" | head -n -1 | patch -p1 -R || echo "Failed Revert 11"
+        
+        # Revert Patch 16 (Version Hack)
         sed -n '/^Subject: \[PATCH 16\/22\]/,/^From /p' "$patch_file" | head -n -1 | patch -p1 -R || echo "Failed Revert 16"
     else
         echo "Error: tu_gen8.patch not found."
         exit 1
     fi
 
+    # Run the Smart Injector
     inject_mods
 
-    sed -i 's/VK_MAKE_VERSION(1, 3, [0-9]*)/VK_MAKE_VERSION(1, 4, 340)/g' src/freedreno/vulkan/tu_device.cc || true
-    sed -i 's/VK_MAKE_VERSION(1, 4, [0-9]*)/VK_MAKE_VERSION(1, 4, 340)/g' src/freedreno/vulkan/tu_device.cc || true
+    # Double check version in device.cc (safe fallback)
+    find . -name "tu_device.cc" -exec sed -i 's/VK_MAKE_VERSION(1, 3, [0-9]*)/VK_MAKE_VERSION(1, 4, 340)/g' {} + || true
+    find . -name "tu_device.cc" -exec sed -i 's/VK_MAKE_VERSION(1, 4, [0-9]*)/VK_MAKE_VERSION(1, 4, 340)/g' {} + || true
 
     echo -e "${green}Building...${nocolor}"
     
@@ -211,7 +243,7 @@ EOF
     echo "{
   \"schemaVersion\": 1,
   \"name\": \"$build_name\",
-  \"description\": \"Mesa Main + A8xx (Reverted Timeline & VerHack) + 1.4.340\",
+  \"description\": \"Mesa Main + A8xx (Fix Timelines) + 1.4.340\",
   \"author\": \"StevenMX\",
   \"packageVersion\": \"1\",
   \"vendor\": \"Mesa\",
