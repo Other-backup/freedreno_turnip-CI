@@ -28,30 +28,55 @@ prepare_ndk(){
 compile_mesa() {
     local repo_url="https://gitlab.freedesktop.org/mesa/mesa.git"
     local branch="main"
-    local build_name="Turnip-A8xx-FixFreeze-Native"
-    local output_tag="V78-A8xx-FixFreeze"
+    # Tag: RobClark Merge + NoConcuBin (Sem UBWC Hack)
+    local build_name="Turnip-A8xx-RobClark-KGSL"
+    local output_tag="V78-A8xx-KGSL"
 
     cd "$workdir"
     if [ -d mesa ]; then rm -rf mesa; fi
     
-    git clone --depth 100 -b "$branch" "$repo_url" mesa
+    # Clone deeper to allow merging history
+    git clone --depth 500 -b "$branch" "$repo_url" mesa
     cd mesa
     git config user.email "ci@turnip.builder" && git config user.name "Turnip CI Builder"
 
+    # --- STEP 1: MERGE ROB CLARK'S BRANCH ---
+    echo -e "${green}Fetching & Merging Rob Clark (tu/gen8-kgsl)...${nocolor}"
+    git remote add robclark https://gitlab.freedesktop.org/robclark/mesa.git || true
+    git fetch robclark
+    
+    # Tenta o merge. Se der conflito leve, tenta continuar.
+    # Isso é arriscado com o tu_gen8.patch depois, mas é o solicitado.
+    git merge --no-edit robclark/tu/gen8-kgsl || echo -e "${green}WARNING: Merge conflicts detected. Proceeding best-effort...${nocolor}"
+
+    # --- STEP 2: APPLY USER PATCH ---
     local patch_file="$workdir/../tu_gen8.patch"
     if [ ! -f "$patch_file" ]; then patch_file="tu_gen8.patch"; fi
     
     if [ -f "$patch_file" ]; then
         echo -e "${green}Applying tu_gen8.patch...${nocolor}"
-        patch -p1 --fuzz=4 --ignore-whitespace < "$patch_file" || echo "Warning: Patch loose match"
+        # Fuzz alto para tentar aplicar mesmo com o merge do Rob Clark
+        patch -p1 --fuzz=4 --ignore-whitespace < "$patch_file" || echo "Warning: Patch had conflicts (expected due to merge)"
         
-        echo -e "${green}Reverting Timeline Semaphore (Fix Freeze) & Version Hack...${nocolor}"
+        echo -e "${green}Reverting Timeline & Version Hacks...${nocolor}"
+        
+        # 1. REVERTER Patch 11 (Timeline Semaphore) - CRÍTICO
         sed -n '/^Subject: \[PATCH 11\/22\]/,/^From /p' "$patch_file" | head -n -1 | patch -p1 -R || echo "Failed Revert 11"
+        
+        # 2. REVERTER Patch 16 (Limpeza de versão)
         sed -n '/^Subject: \[PATCH 16\/22\]/,/^From /p' "$patch_file" | head -n -1 | patch -p1 -R || echo "Failed Revert 16"
+        
+        # Patch 21 (Disable Flushall) é MANTIDO para performance.
     else
         echo "Error: tu_gen8.patch not found."
         exit 1
     fi
+
+    echo -e "${green}Injecting Light Stability (NoConcurrentBinning ONLY)...${nocolor}"
+    
+    # Removido: TU_DEBUG_NOUBWC, TU_DEBUG_FORCE_CLEARS
+    # Mantido: TU_DEBUG_NO_CONCURRENT_BINNING (Essencial para não dar crash na A8xx)
+    find src/freedreno/vulkan -name "tu_device.cc" -exec sed -i 's/tu_env.debug |= TU_DEBUG_NOLRZ;/tu_env.debug |= TU_DEBUG_NOLRZ | TU_DEBUG_NO_CONCURRENT_BINNING;/g' {} +
 
     echo -e "${green}Building...${nocolor}"
     
@@ -120,7 +145,7 @@ EOF
     echo "{
   \"schemaVersion\": 1,
   \"name\": \"$build_name\",
-  \"description\": \"Mesa Main + A8xx (Fix Freeze) - Native Version\",
+  \"description\": \"Mesa A8xx (RobClark Merge + NoConcuBin)\",
   \"author\": \"StevenMX\",
   \"packageVersion\": \"1\",
   \"vendor\": \"Mesa\",
