@@ -4,7 +4,7 @@ set -o pipefail
 green='\033[0;32m'
 nocolor='\033[0m'
 
-deps="ninja patchelf unzip curl pip flex bison zip git perl glslangValidator python3"
+deps="ninja patchelf unzip curl pip flex bison zip git perl glslangValidator python3 patch"
 workdir="$(pwd)/turnip_workdir"
 ndkver="android-ndk-r28"
 target_sdk="36" 
@@ -26,29 +26,51 @@ prepare_ndk(){
 }
 
 compile_mesa() {
-    # --- MUDANÇA DE REPOSITÓRIO E BRANCH ---
-    local repo_url="https://gitlab.freedesktop.org/PixelyIon/mesa.git"
-    local branch="tu-newat"
+    local repo_url="https://gitlab.freedesktop.org/mesa/mesa.git"
+    local branch="main"
     
-    local build_name="Turnip-A8xx-PixelyIon-NewAT"
-    local output_tag="V79-PixelyIon-NewAT"
+    local build_name="Turnip-A8xx-Main-MR37802-Raw"
+    local output_tag="V81-A8xx-MR37802-Raw"
 
-    echo -e "${green}Cloning PixelyIon Mesa (Branch: $branch)...${nocolor}"
+    echo -e "${green}Cloning Mesa Main...${nocolor}"
 
     cd "$workdir"
     if [ -d mesa ]; then rm -rf mesa; fi
     
-    # Clonando o branch específico
-    git clone --depth 100 -b "$branch" "$repo_url" mesa
+    # 1. CLONE MAIN
+    git clone --depth 500 -b "$branch" "$repo_url" mesa
     cd mesa
     git config user.email "ci@turnip.builder" && git config user.name "Turnip CI Builder"
 
-    # NOTA: Não aplicamos tu_gen8.patch aqui pois o branch tu-newat
-    # provavelmente já contém as modificações necessárias ou incompatíveis.
+    # 2. MERGE MR 37802 (Latest)
+    echo -e "${green}Fetching & Merging MR 37802...${nocolor}"
+    git fetch https://gitlab.freedesktop.org/mesa/mesa.git refs/merge-requests/37802/head:mr-37802
     
-    # Opcional: Injetar NoConcurrentBinning se você quiser garantir segurança
-    # Descomente a linha abaixo se essa build 'pura' também travar com vr -4
-    # find src/freedreno/vulkan -name "tu_device.cc" -exec sed -i 's/tu_env.debug |= TU_DEBUG_NOLRZ;/tu_env.debug |= TU_DEBUG_NOLRZ | TU_DEBUG_NO_CONCURRENT_BINNING;/g' {} +
+    # Merge forçado
+    git merge --no-edit mr-37802 || echo -e "${green}WARNING: Merge conflicts with Main. Proceeding...${nocolor}"
+
+    # 3. APLICAR TU_GEN8.PATCH
+    local patch_file="$workdir/../tu_gen8.patch"
+    if [ ! -f "$patch_file" ]; then patch_file="tu_gen8.patch"; fi
+    
+    if [ -f "$patch_file" ]; then
+        echo -e "${green}Applying tu_gen8.patch...${nocolor}"
+        patch -p1 --fuzz=5 --ignore-whitespace < "$patch_file" || echo "Warning: Patch had conflicts (expected)"
+        
+        echo -e "${green}Reverting Timeline & Version Hacks...${nocolor}"
+        
+        # 1. REVERTER Patch 11 (Timeline Semaphore) - CRÍTICO
+        sed -n '/^Subject: \[PATCH 11\/22\]/,/^From /p' "$patch_file" | head -n -1 | patch -p1 -R || echo "Failed Revert 11"
+        
+        # 2. REVERTER Patch 16 (Version Hack)
+        sed -n '/^Subject: \[PATCH 16\/22\]/,/^From /p' "$patch_file" | head -n -1 | patch -p1 -R || echo "Failed Revert 16"
+        
+        # Patch 21 (Flushall Off) mantido.
+        # NENHUMA injeção de NO_CONCURRENT_BINNING.
+    else
+        echo "Error: tu_gen8.patch required for this build!"
+        exit 1
+    fi
 
     echo -e "${green}Building...${nocolor}"
     
@@ -117,7 +139,7 @@ EOF
     echo "{
   \"schemaVersion\": 1,
   \"name\": \"$build_name\",
-  \"description\": \"Mesa PixelyIon (tu-newat) - Clean Build\",
+  \"description\": \"Mesa Main + MR 37802 + Patch A8xx (Raw Performance)\",
   \"author\": \"StevenMX\",
   \"packageVersion\": \"1\",
   \"vendor\": \"Mesa\",
