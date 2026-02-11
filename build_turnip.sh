@@ -28,10 +28,11 @@ prepare_ndk(){
 compile_mesa() {
     local repo_url="https://gitlab.freedesktop.org/zdobersek/mesa-fork.git"
     local branch="work/tu_kgsl_timeline_sync"
-    local build_name="Turnip-Zdobersek-Timeline"
-    local output_tag="V81-Zdobersek-Clean"
+    local upstream_url="https://gitlab.freedesktop.org/mesa/mesa.git"
+    local build_name="Turnip-Zdobersek-Plus-MR39751"
+    local output_tag="V84-Zdobersek-MR39751"
 
-    echo -e "${green}Cloning Zdobersek Fork...${nocolor}"
+    echo -e "${green}Cloning Zdobersek Fork ($branch)...${nocolor}"
     
     cd "$workdir"
     if [ -d mesa ]; then rm -rf mesa; fi
@@ -39,6 +40,11 @@ compile_mesa() {
     git clone --depth 100 -b "$branch" "$repo_url" mesa
     cd mesa
     git config user.email "ci@turnip.builder" && git config user.name "Turnip CI Builder"
+
+    echo -e "${green}Merging Upstream MR 39751...${nocolor}"
+    git remote add upstream "$upstream_url"
+    git fetch upstream refs/merge-requests/39751/head:mr-39751
+    git merge mr-39751 --no-edit
 
     echo -e "${green}Building: $build_name${nocolor}"
     
@@ -107,7 +113,7 @@ EOF
     echo "{
   \"schemaVersion\": 1,
   \"name\": \"$build_name\",
-  \"description\": \"Clean build from zdobersek/mesa-fork (tu_kgsl_timeline_sync)\",
+  \"description\": \"Zdobersek Branch + MR 39751\",
   \"author\": \"StevenMX\",
   \"packageVersion\": \"1\",
   \"vendor\": \"Mesa\",
