@@ -26,23 +26,29 @@ prepare_ndk(){
 }
 
 compile_mesa() {
+    # Usamos o repositório oficial da Mesa, pois o MR vive lá
     local repo_url="https://gitlab.freedesktop.org/mesa/mesa.git"
-    local branch="main"
-    local build_name="Turnip-Main-MR39751"
-    local output_tag="V85-Main-MR39751"
+    local build_name="Turnip-MR39751-Latest"
+    local output_tag="V87-MR39751-Direct"
 
-    echo -e "${green}Cloning Mesa Main...${nocolor}"
+    echo -e "${green}Cloning Mesa Official...${nocolor}"
     
     cd "$workdir"
     if [ -d mesa ]; then rm -rf mesa; fi
     
-    git clone --depth 100 -b "$branch" "$repo_url" mesa
+    # Clona o repositório sem checkout inicial para ganhar tempo
+    git clone --depth 100 --no-checkout "$repo_url" mesa
     cd mesa
     git config user.email "ci@turnip.builder" && git config user.name "Turnip CI Builder"
 
-    echo -e "${green}Merging MR 39751...${nocolor}"
+    echo -e "${green}Fetching MR 39751 (Timeline Sync) directly...${nocolor}"
+    
+    # Esta é a mágica: baixamos o código do MR direto da referência especial do GitLab
+    # refs/merge-requests/39751/head contém o código mais recente que o Zdobersek enviou
     git fetch origin refs/merge-requests/39751/head:mr-39751
-    git merge mr-39751 --no-edit
+    
+    # Agora mudamos para essa branch recém-baixada
+    git checkout mr-39751
 
     echo -e "${green}Building: $build_name${nocolor}"
     
@@ -111,7 +117,7 @@ EOF
     echo "{
   \"schemaVersion\": 1,
   \"name\": \"$build_name\",
-  \"description\": \"Mesa Main + MR 39751 (Native Timeline Sync)\",
+  \"description\": \"Direct Compile of MR 39751 (Native Timeline Sync)\",
   \"author\": \"StevenMX\",
   \"packageVersion\": \"1\",
   \"vendor\": \"Mesa\",
