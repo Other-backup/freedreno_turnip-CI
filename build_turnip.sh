@@ -25,30 +25,56 @@ prepare_ndk(){
     export ANDROID_NDK_HOME="$workdir/$ndkver"
 }
 
-compile_mesa() {
-    # Usamos o repositório oficial da Mesa, pois o MR vive lá
-    local repo_url="https://gitlab.freedesktop.org/mesa/mesa.git"
-    local build_name="Turnip-MR39751-Latest"
-    local output_tag="V87-MR39751-Direct"
+apply_a6xx_fix() {
+    echo -e "${green}Applying A6xx Fix: Removing tu_bo_init_new_cached from tu_device.h...${nocolor}"
+    
+    # Este script Python remove a definição da função tu_bo_init_new_cached
+    cat << 'EOF_PYTHON' > remove_cached_func.py
+import re
+import os
 
-    echo -e "${green}Cloning Mesa Official...${nocolor}"
+file_path = "src/freedreno/vulkan/tu_device.h"
+
+if os.path.exists(file_path):
+    with open(file_path, 'r') as f:
+        content = f.read()
+
+    # Regex para encontrar e remover a função inteira e seu comentário
+    pattern = r"/\* Use cached-coherent when available, for faster CPU readback\.\s*\*/\s*static inline VkResult\s*tu_bo_init_new_cached[\s\S]*?\}\s*"
+    
+    if re.search(pattern, content):
+        print("Found tu_bo_init_new_cached. Removing...")
+        new_content = re.sub(pattern, "", content)
+        with open(file_path, 'w') as f:
+            f.write(new_content)
+    else:
+        print("Function tu_bo_init_new_cached not found in header (already gone?).")
+else:
+    print(f"Error: {file_path} not found.")
+EOF_PYTHON
+
+    python3 remove_cached_func.py
+}
+
+compile_mesa() {
+    local repo_url="https://gitlab.freedesktop.org/mesa/mesa.git"
+    local branch="main"
+    local build_name="Turnip-Main-A6xxFix"
+    local output_tag="V91-Main-A6xxFix-NoMR"
+
+    echo -e "${green}Cloning Mesa Main...${nocolor}"
     
     cd "$workdir"
     if [ -d mesa ]; then rm -rf mesa; fi
     
-    # Clona o repositório sem checkout inicial para ganhar tempo
-    git clone --depth 100 --no-checkout "$repo_url" mesa
+    git clone --depth 100 -b "$branch" "$repo_url" mesa
     cd mesa
     git config user.email "ci@turnip.builder" && git config user.name "Turnip CI Builder"
 
-    echo -e "${green}Fetching MR 39751 (Timeline Sync) directly...${nocolor}"
+    # NÃO APLICAMOS NENHUM MERGE REQUEST (MR 39751 REMOVIDO)
     
-    # Esta é a mágica: baixamos o código do MR direto da referência especial do GitLab
-    # refs/merge-requests/39751/head contém o código mais recente que o Zdobersek enviou
-    git fetch origin refs/merge-requests/39751/head:mr-39751
-    
-    # Agora mudamos para essa branch recém-baixada
-    git checkout mr-39751
+    # APLICA APENAS O FIX MANUAL (Remove tu_bo_init_new_cached)
+    apply_a6xx_fix
 
     echo -e "${green}Building: $build_name${nocolor}"
     
@@ -117,7 +143,7 @@ EOF
     echo "{
   \"schemaVersion\": 1,
   \"name\": \"$build_name\",
-  \"description\": \"Direct Compile of MR 39751 (Native Timeline Sync)\",
+  \"description\": \"Mesa Main + Removed tu_bo_init_new_cached (A6xx Fix)\",
   \"author\": \"StevenMX\",
   \"packageVersion\": \"1\",
   \"vendor\": \"Mesa\",
