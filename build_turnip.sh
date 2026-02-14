@@ -26,10 +26,10 @@ prepare_ndk(){
 }
 
 apply_a6xx_fix() {
-    echo -e "${green}Applying A6xx Fix: Removing tu_bo_init_new_cached from tu_device.h...${nocolor}"
+    echo -e "${green}Applying A6xx Fix: Reverting calls to tu_bo_init_new...${nocolor}"
     
-    # Este script Python remove a definição da função tu_bo_init_new_cached
-    cat << 'EOF_PYTHON' > remove_cached_func.py
+    # 1. Remove a definição da função "cached" do header (tu_device.h)
+    cat << 'EOF_PYTHON' > remove_cached_def.py
 import re
 import os
 
@@ -43,24 +43,25 @@ if os.path.exists(file_path):
     pattern = r"/\* Use cached-coherent when available, for faster CPU readback\.\s*\*/\s*static inline VkResult\s*tu_bo_init_new_cached[\s\S]*?\}\s*"
     
     if re.search(pattern, content):
-        print("Found tu_bo_init_new_cached. Removing...")
+        print("Removed definition of tu_bo_init_new_cached from header.")
         new_content = re.sub(pattern, "", content)
         with open(file_path, 'w') as f:
             f.write(new_content)
-    else:
-        print("Function tu_bo_init_new_cached not found in header (already gone?).")
-else:
-    print(f"Error: {file_path} not found.")
 EOF_PYTHON
+    python3 remove_cached_def.py
 
-    python3 remove_cached_func.py
+    # 2. Substitui as chamadas no código: tu_bo_init_new_cached -> tu_bo_init_new
+    # Isso corrige o erro "undeclared identifier" redirecionando para a função padrão
+    echo -e "${green}Replacing usages in source files...${nocolor}"
+    find src/freedreno/vulkan -name "*.cc" -exec sed -i 's/tu_bo_init_new_cached/tu_bo_init_new/g' {} +
+    find src/freedreno/vulkan -name "*.c" -exec sed -i 's/tu_bo_init_new_cached/tu_bo_init_new/g' {} +
 }
 
 compile_mesa() {
     local repo_url="https://gitlab.freedesktop.org/mesa/mesa.git"
     local branch="main"
     local build_name="Turnip-Main-A6xxFix"
-    local output_tag="V91-Main-A6xxFix-NoMR"
+    local output_tag="V92-Main-A6xxFix-Patched"
 
     echo -e "${green}Cloning Mesa Main...${nocolor}"
     
@@ -71,9 +72,7 @@ compile_mesa() {
     cd mesa
     git config user.email "ci@turnip.builder" && git config user.name "Turnip CI Builder"
 
-    # NÃO APLICAMOS NENHUM MERGE REQUEST (MR 39751 REMOVIDO)
-    
-    # APLICA APENAS O FIX MANUAL (Remove tu_bo_init_new_cached)
+    # APLICA O FIX COMPLETO (Remove def + Substitui chamadas)
     apply_a6xx_fix
 
     echo -e "${green}Building: $build_name${nocolor}"
@@ -143,7 +142,7 @@ EOF
     echo "{
   \"schemaVersion\": 1,
   \"name\": \"$build_name\",
-  \"description\": \"Mesa Main + Removed tu_bo_init_new_cached (A6xx Fix)\",
+  \"description\": \"Mesa Main + Revert tu_bo_init_new_cached (A6xx Fix)\",
   \"author\": \"StevenMX\",
   \"packageVersion\": \"1\",
   \"vendor\": \"Mesa\",
