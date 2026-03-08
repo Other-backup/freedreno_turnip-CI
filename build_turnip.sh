@@ -45,7 +45,7 @@ apply_a6xx_patch() {
 compile_mesa() {
     local repo_url="https://gitlab.freedesktop.org/mesa/mesa.git"
     local branch="main"
-    local output_name="Normal-A6xx-Patched"
+    local output_name="Normal-A6xx-MR39751"
     local mesa_dir="$workdir/mesa"
     local build_dir="$mesa_dir/build"
 
@@ -53,10 +53,13 @@ compile_mesa() {
     rm -rf "$mesa_dir"
     git clone --depth 100 -b "$branch" "$repo_url" "$mesa_dir"
     
-    # Aplica o seu patch de estabilidade A6xx
     apply_a6xx_patch
 
     cd "$mesa_dir"
+
+    echo -e "${green}Applying MR 39751...${nocolor}"
+    curl -sL "https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/39751.patch" -o 39751.patch
+    patch -p1 --fuzz=4 < 39751.patch || true
 
     # Correções preventivas para compilação no NDK r29
     sed -i 's/typedef const native_handle_t\* buffer_handle_t;/typedef void\* buffer_handle_t;/g' include/android_stub/cutils/native_handle.h || true
@@ -126,8 +129,8 @@ EOF
 
     echo "{
   \"schemaVersion\": 1,
-  \"name\": \"Turnip-Main-A6xx-Patched\",
-  \"description\": \"Mesa Upstream + A6xx Stability Patch ($githash)\",
+  \"name\": \"Turnip-Main-A6xx-MR39751\",
+  \"description\": \"Mesa Upstream + A6xx Stability + MR39751 ($githash)\",
   \"author\": \"StevenMX\",
   \"packageVersion\": \"1\",
   \"vendor\": \"Mesa\",
