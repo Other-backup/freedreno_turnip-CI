@@ -57,10 +57,6 @@ compile_mesa() {
 
     cd "$mesa_dir"
 
-    echo -e "${green}Applying MR 39751...${nocolor}"
-    curl -sL "https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/39751.patch" -o 39751.patch
-    patch -p1 --fuzz=4 < 39751.patch || true
-
     # Correções preventivas para compilação no NDK r29
     sed -i 's/typedef const native_handle_t\* buffer_handle_t;/typedef void\* buffer_handle_t;/g' include/android_stub/cutils/native_handle.h || true
     sed -i 's/, hnd->handle/, (void \*)hnd->handle/g' src/util/u_gralloc/u_gralloc_fallback.c || true
