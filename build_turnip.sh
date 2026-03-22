@@ -36,8 +36,6 @@ compile_mesa() {
     cd "$workdir"
     rm -rf "$mesa_dir"
     git clone --depth 100 -b "$branch" "$repo_url" "$mesa_dir"
-    
-    apply_a6xx_patch
 
     cd "$mesa_dir"
 
