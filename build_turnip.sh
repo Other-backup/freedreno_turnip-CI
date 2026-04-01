@@ -1,9 +1,6 @@
 #!/bin/bash -e
 set -o pipefail
 
-green='\033[0;32m'
-red='\033[0;31m'
-nocolor='\033[0m'
 deps="ninja patchelf unzip curl pip flex bison zip git perl glslangValidator python3"
 workdir="$(pwd)/turnip_workdir"
 ndkver="android-ndk-r29"
@@ -24,26 +21,23 @@ prepare_ndk(){
     export ANDROID_NDK_HOME="$workdir/$ndkver"
 }
 
-
-
 compile_mesa() {
     local repo_url="https://gitlab.freedesktop.org/mesa/mesa.git"
     local branch="main"
-    local output_name="Normal-A6xx-MR39751"
+    local output_name="Turnip-MR39751"
     local mesa_dir="$workdir/mesa"
     local build_dir="$mesa_dir/build"
 
     cd "$workdir"
     rm -rf "$mesa_dir"
     git clone --depth 100 -b "$branch" "$repo_url" "$mesa_dir"
-
     cd "$mesa_dir"
+    
+    local githash=$(git rev-parse --short HEAD)
 
-    echo -e "${green}Applying MR 39751...${nocolor}"
     curl -sL "https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/39751.patch" -o 39751.patch
     patch -p1 --fuzz=4 < 39751.patch || true
-
-    # Correções preventivas para compilação no NDK r29
+    
     sed -i 's/typedef const native_handle_t\* buffer_handle_t;/typedef void\* buffer_handle_t;/g' include/android_stub/cutils/native_handle.h || true
     sed -i 's/, hnd->handle/, (void \*)hnd->handle/g' src/util/u_gralloc/u_gralloc_fallback.c || true
     sed -i 's/native_buffer->handle->/((const native_handle_t \*)native_buffer->handle)->/g' src/vulkan/runtime/vk_android.c || true
@@ -107,21 +101,29 @@ EOF
     cd "$pkg_dir"
     patchelf --set-soname "vulkan.adreno.so" vulkan.ad07XX.so
     
-    local githash=$(git rev-parse --short HEAD)
-
-    echo "{
-  \"schemaVersion\": 1,
-  \"name\": \"Turnip-Main-A6xx-MR39751\",
-  \"description\": \"Mesa Upstream + A6xx Stability + MR39751 ($githash)\",
-  \"author\": \"StevenMX\",
-  \"packageVersion\": \"1\",
-  \"vendor\": \"Mesa\",
-  \"driverVersion\": \"Mesa-Main\",
-  \"minApi\": 28,
-  \"libraryName\": \"vulkan.ad07XX.so\"
-}" > meta.json
+    cat <<EOF >"meta.json"
+{
+  "schemaVersion": 1,
+  "name": "Turnip MR39751",
+  "description": "Mesa Main + Timeline Semaphores MR39751 (git $githash)",
+  "author": "StevenMXZ",
+  "packageVersion": "1",
+  "vendor": "Mesa",
+  "driverVersion": "Mesa-Main",
+  "minApi": 28,
+  "libraryName": "vulkan.ad07XX.so"
+}
+EOF
     
-    zip -9 "$workdir/Turnip-${output_name}.zip" vulkan.ad07XX.so meta.json
+    ZIP_NAME="${output_name}_v${BUILD_VERSION}.zip"
+    zip -9 "/tmp/$ZIP_NAME" vulkan.ad07XX.so meta.json
+    
+    if ! [ -f "/tmp/$ZIP_NAME" ]; then
+        echo "Failed to pack the archive!"
+    else
+        cp "/tmp/$ZIP_NAME" "$workdir/"
+        echo "Build completed successfully! Copied $ZIP_NAME"
+    fi
 }
 
 check_deps
