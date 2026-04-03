@@ -24,7 +24,7 @@ prepare_ndk(){
 compile_mesa() {
     local repo_url="https://gitlab.freedesktop.org/mesa/mesa.git"
     local branch="main"
-    local output_name="Turnip-MR39751"
+    local output_name="Turnip-MR37802"
     local mesa_dir="$workdir/mesa"
     local build_dir="$mesa_dir/build"
 
@@ -35,8 +35,8 @@ compile_mesa() {
     
     local githash=$(git rev-parse --short HEAD)
 
-    curl -sL "https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/39751.patch" -o 39751.patch
-    patch -p1 --fuzz=4 < 39751.patch || true
+    curl -sL "https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/37802.patch" -o 37802.patch
+    patch -p1 --fuzz=4 < 37802.patch || true
     
     sed -i 's/typedef const native_handle_t\* buffer_handle_t;/typedef void\* buffer_handle_t;/g' include/android_stub/cutils/native_handle.h || true
     sed -i 's/, hnd->handle/, (void \*)hnd->handle/g' src/util/u_gralloc/u_gralloc_fallback.c || true
@@ -104,8 +104,8 @@ EOF
     cat <<EOF >"meta.json"
 {
   "schemaVersion": 1,
-  "name": "Turnip MR39751",
-  "description": "Mesa Main + Timeline Semaphores MR39751 (git $githash)",
+  "name": "Turnip MR37802",
+  "description": "Mesa Main + MR37802 (git $githash)",
   "author": "StevenMXZ",
   "packageVersion": "1",
   "vendor": "Mesa",
