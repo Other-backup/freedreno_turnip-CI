@@ -24,7 +24,7 @@ prepare_ndk(){
 compile_mesa() {
     local repo_url="https://gitlab.freedesktop.org/mesa/mesa.git"
     local branch="main"
-    local output_name="Turnip-Normal-MR37802-A6xx"
+    local output_name="Turnip-Normal-AllFeat"
     local mesa_dir="$workdir/mesa"
     local build_dir="$mesa_dir/build"
 
@@ -35,24 +35,9 @@ compile_mesa() {
     
     local githash=$(git rev-parse --short HEAD)
 
-    curl -sL "https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/37802.patch" -o 37802.patch
-    patch -p1 --fuzz=4 < 37802.patch || true
+    perl -pi -e 's/\.(KHR|EXT|AMD|ARM|GOOGLE|IMG|NV|QCOM|VALVE)_([a-zA-Z0-9_]+)\s*=[^,]*,/.\1_\2 = true,/g' src/freedreno/vulkan/tu_device.cc
+    perl -0777 -pi -e 's/features->([a-zA-Z0-9_]+)\s*=[^;]+;/features->\1 = true;/g' src/freedreno/vulkan/tu_device.cc
 
-    sed -i '/a7xx_gen1 = GPUProps(/a \        has_early_preamble = False,' src/freedreno/common/freedreno_devices.py || true
-    
-    if [ -f src/freedreno/vulkan/tu_query.cc ]; then
-        sed -i 's/tu_bo_init_new_cached/tu_bo_init_new/g' src/freedreno/vulkan/tu_query.cc
-    fi
-    
-    if [ -f src/freedreno/vulkan/tu_device.cc ]; then
-        sed -i 's/physical_device->has_cached_coherent_memory = .*/physical_device->has_cached_coherent_memory = false;/' src/freedreno/vulkan/tu_device.cc || true
-    fi
-    
-    grep -rl "VK_MEMORY_PROPERTY_HOST_CACHED_BIT" src/freedreno/vulkan/ | while read file; do
-        sed -i 's/dev->physical_device->has_cached_coherent_memory ? VK_MEMORY_PROPERTY_HOST_CACHED_BIT : 0/0/g' "$file" || true
-        sed -i 's/VK_MEMORY_PROPERTY_HOST_CACHED_BIT/0/g' "$file" || true
-    done
-    
     sed -i 's/typedef const native_handle_t\* buffer_handle_t;/typedef void\* buffer_handle_t;/g' include/android_stub/cutils/native_handle.h || true
     sed -i 's/, hnd->handle/, (void \*)hnd->handle/g' src/util/u_gralloc/u_gralloc_fallback.c || true
     sed -i 's/native_buffer->handle->/((const native_handle_t \*)native_buffer->handle)->/g' src/vulkan/runtime/vk_android.c || true
@@ -119,8 +104,8 @@ EOF
     cat <<EOF >"meta.json"
 {
   "schemaVersion": 1,
-  "name": "Turnip MR37802 A6xx",
-  "description": "Mesa Main + MR37802 + Preamble/A6xx Fix (git $githash)",
+  "name": "Turnip Normal All Features",
+  "description": "Mesa Main + AllExt (git $githash)",
   "author": "StevenMXZ",
   "packageVersion": "1",
   "vendor": "Mesa",
