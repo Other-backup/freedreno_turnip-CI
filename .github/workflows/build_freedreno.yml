@@ -1,15 +1,15 @@
 name: Build Freedreno KGSL (Winlator GLX)
 
 on:
-  workflow_dispatch: # Permite rodar manualmente na aba "Actions" do GitHub
+  workflow_dispatch: # Permite rodar manualmente no painel do GitHub
 
 jobs:
   build:
     runs-on: ubuntu-24.04
     
     env:
-      NDK_VER: "android-ndk-r26c" # Use a mesma versão que você usa para o Winlator
-      API_LEVEL: "28" # AHardwareBuffer precisa no mínimo da API 26, 28 é seguro
+      NDK_VER: "android-ndk-r26c" # Versão estável do NDK
+      API_LEVEL: "28" # Necessário para suporte a AHardwareBuffer
       
     steps:
       - name: Checkout repository
@@ -18,8 +18,9 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          # Meson foi removido do apt-get e movido para o pip3 para garantir a versão mais recente (>= 1.4.0)
+          # Instalamos as ferramentas de sistema, mas deixamos o meson para o pip3
           sudo apt-get install -y ninja-build flex bison python3-pip curl unzip pkg-config
+          # Garante o Meson >= 1.4.0 exigido pelas versões recentes do Mesa
           pip3 install meson mako --break-system-packages
 
       - name: Download and Setup Android NDK
@@ -33,15 +34,21 @@ jobs:
         run: |
           git clone --depth 1 -b main https://gitlab.freedesktop.org/mesa/mesa.git
           
+      - name: Setup libdrm Fallback
+        run: |
+          # O Freedreno OpenGL precisa do libdrm, que não existe nativamente no NDK
+          mkdir -p mesa/subprojects
+          git clone --depth 1 https://gitlab.freedesktop.org/mesa/drm.git mesa/subprojects/libdrm
+
       - name: Apply KGSL Patch
         run: |
           cd mesa
-          # Certifique-se de que o arquivo de patch existe na pasta 'patches' do seu repositório!
+          # Certifica-te de que tens o ficheiro 0014-freedreno-kgsl-experimental.patch na pasta 'patches'
           patch -p1 < ../patches/0014-freedreno-kgsl-experimental.patch
 
       - name: Setup Meson Cross-File
         run: |
-          # Ensina o Meson a usar o compilador cruzado do Android NDK
+          # Configura o ficheiro de compilação cruzada para o compilador do NDK
           cat <<EOF > mesa/android-aarch64.txt
           [binaries]
           ar = '$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar'
@@ -62,7 +69,7 @@ jobs:
       - name: Configure Build (Meson)
         run: |
           cd mesa
-          # Configuração: Desativa X11/GLX/GBM, ativa Android (AHardwareBuffer) e Freedreno via KGSL
+          # Ativa suporte Android, KGSL e define o libdrm como fallback interno
           meson setup build --cross-file android-aarch64.txt \
             -Dbuildtype=release \
             -Dplatforms=android \
@@ -77,7 +84,8 @@ jobs:
             -Dopengl=true \
             -Dglx=disabled \
             -Dgbm=disabled \
-            -Dshared-glapi=enabled
+            -Dshared-glapi=enabled \
+            --force-fallback-for=libdrm
             
       - name: Compile
         run: |
@@ -87,10 +95,11 @@ jobs:
       - name: Collect Artifacts
         run: |
           mkdir -p freedreno-libs
-          # Coleta apenas as bibliotecas essenciais para o in-process JNI
+          # Bibliotecas necessárias para carregar via dlopen no Winlator
           cp mesa/build/src/egl/libEGL_mesa.so freedreno-libs/
           cp mesa/build/src/mapi/es2api/libGLESv2_mesa.so freedreno-libs/
           cp mesa/build/src/mapi/shared-glapi/libglapi.so freedreno-libs/
+          # Procura e copia o driver Gallium (msm_kgsl_dri.so)
           find mesa/build -name "*_dri.so" -exec cp {} freedreno-libs/ \;
           
       - name: Upload Artifacts
