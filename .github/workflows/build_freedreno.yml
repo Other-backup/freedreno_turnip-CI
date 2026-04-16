@@ -35,7 +35,7 @@ jobs:
           # Cria a pasta onde o libdrm será instalado localmente
           mkdir -p $GITHUB_WORKSPACE/prefix
           
-          # Arquivo limpo do compilador cruzado
+          # Arquivo limpo do compilador cruzado com correção para o LLD 17+ (undefined-version)
           cat <<EOF > $GITHUB_WORKSPACE/android-aarch64.txt
           [binaries]
           c = 'aarch64-linux-android${API_LEVEL}-clang'
@@ -49,6 +49,10 @@ jobs:
           cpu_family = 'aarch64'
           cpu = 'armv8'
           endian = 'little'
+          
+          [built-in options]
+          c_link_args = ['-Wl,--undefined-version']
+          cpp_link_args = ['-Wl,--undefined-version']
           EOF
           
           # Força o pkg-config a buscar dependências APENAS no nosso prefixo (onde a libdrm vai ficar)
