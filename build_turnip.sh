@@ -1,131 +1,103 @@
-#!/bin/bash -e
-set -o pipefail
+name: Build Freedreno KGSL (Winlator GLX)
 
-deps="ninja patchelf unzip curl pip flex bison zip git perl glslangValidator python3"
-workdir="$(pwd)/turnip_workdir"
-ndkver="android-ndk-r29"
+on:
+  workflow_dispatch: # Permite rodar manualmente no painel do GitHub
 
-check_deps(){
-	for dep in $deps; do
-		if ! command -v $dep >/dev/null 2>&1; then exit 1; fi
-	done
-	pip install meson mako --break-system-packages &> /dev/null || true
-}
-
-prepare_ndk(){
-	mkdir -p "$workdir" && cd "$workdir"
-	if [ ! -d "$ndkver" ]; then
-		curl -sL "https://dl.google.com/android/repository/${ndkver}-linux.zip" --output "${ndkver}-linux.zip" &> /dev/null
-		unzip -q "${ndkver}-linux.zip" &> /dev/null
-	fi
-    export ANDROID_NDK_HOME="$workdir/$ndkver"
-}
-
-compile_mesa() {
-    local repo_url="https://gitlab.freedesktop.org/mesa/mesa.git"
-    local branch="main"
-    local output_name="Turnip-Normal-AllFeat"
-    local mesa_dir="$workdir/mesa"
-    local build_dir="$mesa_dir/build"
-
-    cd "$workdir"
-    rm -rf "$mesa_dir"
-    git clone --depth 100 -b "$branch" "$repo_url" "$mesa_dir"
-    cd "$mesa_dir"
+jobs:
+  build:
+    runs-on: ubuntu-24.04
     
-    local githash=$(git rev-parse --short HEAD)
+    env:
+      NDK_VER: "android-ndk-r26c" # Use a mesma versão que você usa para o Winlator
+      API_LEVEL: "28" # AHardwareBuffer precisa no mínimo da API 26, 28 é seguro
+      
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    perl -pi -e 's/\.(KHR|EXT|AMD|ARM|GOOGLE|IMG|NV|QCOM|VALVE)_([a-zA-Z0-9_]+)\s*=[^,]*,/.\1_\2 = true,/g' src/freedreno/vulkan/tu_device.cc
-    perl -0777 -pi -e 's/features->([a-zA-Z0-9_]+)\s*=[^;]+;/features->\1 = true;/g' src/freedreno/vulkan/tu_device.cc
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y meson ninja-build flex bison python3-pip curl unzip pkg-config
+          pip3 install mako --break-system-packages
 
-    sed -i 's/typedef const native_handle_t\* buffer_handle_t;/typedef void\* buffer_handle_t;/g' include/android_stub/cutils/native_handle.h || true
-    sed -i 's/, hnd->handle/, (void \*)hnd->handle/g' src/util/u_gralloc/u_gralloc_fallback.c || true
-    sed -i 's/native_buffer->handle->/((const native_handle_t \*)native_buffer->handle)->/g' src/vulkan/runtime/vk_android.c || true
+      - name: Download and Setup Android NDK
+        run: |
+          cd $GITHUB_WORKSPACE
+          curl -sLO https://dl.google.com/android/repository/${NDK_VER}-linux.zip
+          unzip -q ${NDK_VER}-linux.zip
+          echo "NDK_HOME=$GITHUB_WORKSPACE/${NDK_VER}" >> $GITHUB_ENV
 
-    mkdir -p subprojects && cd subprojects
-    rm -rf spirv-tools spirv-headers
-    git clone --depth=1 https://github.com/KhronosGroup/SPIRV-Tools.git spirv-tools
-    git clone --depth=1 https://github.com/KhronosGroup/SPIRV-Headers.git spirv-headers
-    cd ..
+      - name: Clone Mesa
+        run: |
+          git clone --depth 1 -b main https://gitlab.freedesktop.org/mesa/mesa.git
+          
+      - name: Apply KGSL Patch
+        run: |
+          cd mesa
+          # Aplica o patch KGSL que você salvou no seu repositório
+          patch -p1 < ../patches/0014-freedreno-kgsl-experimental.patch
 
-    local ndk_bin="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-    local ndk_sys="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
-    local cver="35"
-    [ ! -f "$ndk_bin/aarch64-linux-android${cver}-clang" ] && cver="34"
+      - name: Setup Meson Cross-File
+        run: |
+          # Cria o arquivo para ensinar o Meson a usar o compilador do Android NDK
+          cat <<EOF > mesa/android-aarch64.txt
+          [binaries]
+          ar = '$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar'
+          c = ['ccache', '$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${API_LEVEL}-clang']
+          cpp = ['ccache', '$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${API_LEVEL}-clang++']
+          c_ld = 'lld'
+          cpp_ld = 'lld'
+          strip = '$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip'
+          pkg-config = ['env', 'PKG_CONFIG_LIBDIR=$NDK_HOME/pkg-config', '/usr/bin/pkg-config']
 
-    cat <<EOF > android-cross.txt
-[binaries]
-ar = '$ndk_bin/llvm-ar'
-c = ['ccache', '$ndk_bin/aarch64-linux-android${cver}-clang', '--sysroot=$ndk_sys']
-cpp = ['ccache', '$ndk_bin/aarch64-linux-android${cver}-clang++', '--sysroot=$ndk_sys']
-c_ld = 'lld'
-cpp_ld = 'lld'
-strip = '$ndk_bin/aarch64-linux-android-strip'
-[host_machine]
-system = 'android'
-cpu_family = 'aarch64'
-cpu = 'armv8'
-endian = 'little'
-[built-in options]
-c_link_args = ['-static-libstdc++']
-cpp_link_args = ['-static-libstdc++']
-EOF
-    
-    export CFLAGS="-D__ANDROID__ -Wno-error -Wno-deprecated-declarations -Wno-incompatible-pointer-types-discards-qualifiers -Wno-incompatible-pointer-types"
-    export CXXFLAGS="-D__ANDROID__ -Wno-error -Wno-deprecated-declarations -Wno-incompatible-pointer-types-discards-qualifiers -Wno-incompatible-pointer-types"
+          [host_machine]
+          system = 'android'
+          cpu_family = 'aarch64'
+          cpu = 'armv8'
+          endian = 'little'
+          EOF
 
-    meson setup "$build_dir" --cross-file android-cross.txt \
-        -Dbuildtype=release \
-        -Dplatforms=android \
-        -Dplatform-sdk-version=36 \
-        -Dandroid-stub=true \
-        -Dgallium-drivers= \
-        -Dvulkan-drivers=freedreno \
-        -Dfreedreno-kmds=kgsl \
-        -Degl=disabled \
-        -Dglx=disabled \
-        -Dvulkan-beta=true \
-        -Ddefault_library=shared \
-        -Dzstd=disabled \
-        -Dwerror=false \
-        --force-fallback-for=spirv-tools,spirv-headers
-    
-    ninja -C "$build_dir"
+      - name: Configure Build (Meson)
+        run: |
+          cd mesa
+          
+          # A mágica acontece aqui. Desativamos o X11 e GLX do Mesa,
+          # ativamos a plataforma Android (para ter AHardwareBuffer na libEGL)
+          # e forçamos o Freedreno a usar o KGSL.
+          meson setup build --cross-file android-aarch64.txt \
+            -Dbuildtype=release \
+            -Dplatforms=android \
+            -Dplatform-sdk-version=${API_LEVEL} \
+            -Dandroid-stub=true \
+            -Dgallium-drivers=freedreno \
+            -Dvulkan-drivers= \
+            -Dfreedreno-kmds=kgsl \
+            -Degl=enabled \
+            -Dgles1=disabled \
+            -Dgles2=enabled \
+            -Dopengl=true \
+            -Dglx=disabled \
+            -Dgbm=disabled \
+            -Dshared-glapi=enabled
+            
+      - name: Compile
+        run: |
+          cd mesa
+          ninja -C build
 
-    local lib="$build_dir/src/freedreno/vulkan/libvulkan_freedreno.so"
-    if [ ! -f "$lib" ]; then exit 1; fi
-    
-    local pkg_dir="$workdir/pkg_$output_name"
-    mkdir -p "$pkg_dir"
-    cp "$lib" "$pkg_dir/vulkan.ad07XX.so"
-    cd "$pkg_dir"
-    patchelf --set-soname "vulkan.adreno.so" vulkan.ad07XX.so
-    
-    cat <<EOF >"meta.json"
-{
-  "schemaVersion": 1,
-  "name": "Turnip Normal All Features",
-  "description": "Mesa Main + AllExt (git $githash)",
-  "author": "StevenMXZ",
-  "packageVersion": "1",
-  "vendor": "Mesa",
-  "driverVersion": "Mesa-Main",
-  "minApi": 28,
-  "libraryName": "vulkan.ad07XX.so"
-}
-EOF
-    
-    ZIP_NAME="${output_name}_v${BUILD_VERSION}.zip"
-    zip -9 "/tmp/$ZIP_NAME" vulkan.ad07XX.so meta.json
-    
-    if ! [ -f "/tmp/$ZIP_NAME" ]; then
-        echo "Failed to pack the archive!"
-    else
-        cp "/tmp/$ZIP_NAME" "$workdir/"
-        echo "Build completed successfully! Copied $ZIP_NAME"
-    fi
-}
-
-check_deps
-prepare_ndk
-compile_mesa
+      - name: Collect Artifacts
+        run: |
+          mkdir -p freedreno-libs
+          # A libEGL e libGLESv2 são as que o seu JNI (glx_freedreno.c) carrega via dlopen()
+          cp mesa/build/src/egl/libEGL_mesa.so freedreno-libs/
+          cp mesa/build/src/mapi/es2api/libGLESv2_mesa.so freedreno-libs/
+          cp mesa/build/src/mapi/shared-glapi/libglapi.so freedreno-libs/
+          # O driver Gallium em si geralmente compila como libgallium_dri.so na pasta de módulos
+          find mesa/build -name "*_dri.so" -exec cp {} freedreno-libs/ \;
+          
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: freedreno-kgsl-libs
+          path: freedreno-libs/
