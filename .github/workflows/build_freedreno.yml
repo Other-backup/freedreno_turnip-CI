@@ -15,11 +15,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      -  name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y meson ninja-build flex bison python3-pip curl unzip pkg-config
-          pip3 install mako --break-system-packages
+          # Tirei o 'meson' daqui de cima...
+          sudo apt-get install -y ninja-build flex bison python3-pip curl unzip pkg-config
+          # ...e coloquei aqui embaixo para baixar a versão mais nova via pip!
+          pip3 install meson mako --break-system-packages
 
       - name: Download and Setup Android NDK
         run: |
