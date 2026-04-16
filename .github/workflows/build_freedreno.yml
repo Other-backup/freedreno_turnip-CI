@@ -1,45 +1,121 @@
-name: Build Freedreno KGSL libs
+name: Build Freedreno KGSL (Winlator GLX)
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # Permite a execução manual no separador Actions
 
 jobs:
-  build-freedreno:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: ubuntu-24.04
+    
+    env:
+      NDK_VER: "android-ndk-r26c"
+      # API 29 (Android 10) é obrigatória para suporte nativo a ELF TLS no Mesa recente
+      API_LEVEL: "29" 
+      
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Install build deps
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y meson ninja-build pkg-config python3-mako libdrm-dev libexpat1-dev
+          sudo apt-get install -y ninja-build flex bison python3-pip curl unzip pkg-config
+          # Instalamos o meson e o mako via pip para garantir a versão >= 1.4.0
+          pip3 install meson mako --break-system-packages
+
+      - name: Setup Android NDK
+        run: |
+          cd $GITHUB_WORKSPACE
+          curl -sLO https://dl.google.com/android/repository/${NDK_VER}-linux.zip
+          unzip -q ${NDK_VER}-linux.zip
+          echo "NDK_HOME=$GITHUB_WORKSPACE/${NDK_VER}" >> $GITHUB_ENV
+          echo "$GITHUB_WORKSPACE/${NDK_VER}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
+
+      - name: Setup Cross-File and Env
+        run: |
+          mkdir -p $GITHUB_WORKSPACE/prefix
+          
+          # Ficheiro de compilação cruzada para o NDK
+          cat <<EOF > $GITHUB_WORKSPACE/android-aarch64.txt
+          [binaries]
+          c = 'aarch64-linux-android${API_LEVEL}-clang'
+          cpp = 'aarch64-linux-android${API_LEVEL}-clang++'
+          ar = 'llvm-ar'
+          strip = 'llvm-strip'
+          pkg-config = '/usr/bin/pkg-config'
+
+          [host_machine]
+          system = 'android'
+          cpu_family = 'aarch64'
+          cpu = 'armv8'
+          endian = 'little'
+          EOF
+          
+          # Configura o pkg-config para encontrar a libdrm que vamos compilar
+          echo "PKG_CONFIG_LIBDIR=$GITHUB_WORKSPACE/prefix/lib/pkgconfig:$GITHUB_WORKSPACE/prefix/lib/aarch64-linux-android/pkgconfig:$GITHUB_WORKSPACE/prefix/share/pkgconfig" >> $GITHUB_ENV
+
+      - name: Build and Install libdrm
+        run: |
+          cd $GITHUB_WORKSPACE
+          git clone --depth 1 https://gitlab.freedesktop.org/mesa/drm.git libdrm
+          cd libdrm
+          meson setup build --cross-file ../android-aarch64.txt \
+            --prefix=$GITHUB_WORKSPACE/prefix \
+            -Dintel=disabled -Dradeon=disabled -Damdgpu=disabled -Dnouveau=disabled \
+            -Dvmwgfx=disabled -Domap=disabled -Dexynos=disabled -Dfreedreno=enabled \
+            -Dtegra=disabled -Detnaviv=disabled -Dcairo-tests=disabled -Dman-pages=disabled \
+            -Dvalgrind=disabled -Dtests=false
+          ninja -C build install
+
+      - name: Clone and Patch Mesa
+        run: |
+          cd $GITHUB_WORKSPACE
+          git clone --depth 1 -b main https://gitlab.freedesktop.org/mesa/mesa.git
+          cd mesa
+          # Aplica o patch KGSL (o ficheiro deve estar em patches/0014-freedreno-kgsl-experimental.patch)
+          patch -p1 < ../patches/0014-freedreno-kgsl-experimental.patch
 
       - name: Configure and Build Mesa
         run: |
-          meson setup build-mesa \
-            -Dplatforms=android \
-            -Dgallium-drivers= \
-            -Dvulkan-drivers=freedreno \
-            -Dfreedreno-kmds=kgsl \
+          cd $GITHUB_WORKSPACE/mesa
+          meson setup build --cross-file ../android-aarch64.txt \
+            --prefix=$GITHUB_WORKSPACE/prefix \
             -Dbuildtype=release \
-            -Dshared-glapi=enabled \
-            -Dllvm=disabled
-          ninja -C build-mesa
+            -Dplatforms=android \
+            -Dplatform-sdk-version=${API_LEVEL} \
+            -Dandroid-stub=true \
+            -Dgallium-drivers=freedreno \
+            -Dvulkan-drivers= \
+            -Dfreedreno-kmds=kgsl \
+            -Degl=enabled \
+            -Dgles1=disabled \
+            -Dgles2=enabled \
+            -Dopengl=true \
+            -Dglx=disabled \
+            -Dgbm=disabled \
+            -Dshared-glapi=enabled
+          ninja -C build
 
       - name: Collect Artifacts
         run: |
           mkdir -p $GITHUB_WORKSPACE/freedreno-libs
-          cd build-mesa
-          find . -name "libEGL_mesa.so" -exec cp -L {} $GITHUB_WORKSPACE/freedreno-libs/ \;
-          find . -name "libGLESv2_mesa.so" -exec cp -L {} $GITHUB_WORKSPACE/freedreno-libs/ \;
-          find . -name "libvulkan_freedreno.so" -exec cp -L {} $GITHUB_WORKSPACE/freedreno-libs/ \;
+          cd $GITHUB_WORKSPACE/mesa/build
+          
+          # Copia EGL, GLESv2 e DRI
+          find . -name "libEGL*.so*" -exec cp -L {} $GITHUB_WORKSPACE/freedreno-libs/ \;
+          find . -name "libGLESv2*.so*" -exec cp -L {} $GITHUB_WORKSPACE/freedreno-libs/ \;
+          find . -name "*_dri.so" -exec cp -L {} $GITHUB_WORKSPACE/freedreno-libs/ \;
+          
+          # TAREFA 6: Extração inteligente da libglapi para preservar o soname para o Android dlopen
           find . \( -name "libglapi.so" -o -name "libglapi.so.*" \) -exec cp -L {} $GITHUB_WORKSPACE/freedreno-libs/ \;
+          
+          # Reconstruir os symlinks na pasta de destino
           cd $GITHUB_WORKSPACE/freedreno-libs
           [ -f libglapi.so.0 ] && ln -sf libglapi.so.0 libglapi.so || true
           [ -f libglapi.so.0.0.0 ] && ln -sf libglapi.so.0.0.0 libglapi.so.0 || true
-
-      - name: Upload artifacts
+          
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: freedreno-libs
+          name: freedreno-kgsl-libs
           path: freedreno-libs/
