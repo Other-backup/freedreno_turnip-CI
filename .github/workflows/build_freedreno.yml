@@ -1,7 +1,7 @@
 name: Build Freedreno KGSL (Winlator GLX)
 
 on:
-  workflow_dispatch: # Permite rodar manualmente no painel do GitHub
+  workflow_dispatch: # Permite rodar manualmente na aba "Actions" do GitHub
 
 jobs:
   build:
@@ -15,12 +15,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      -  name: Install dependencies
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          # Tirei o 'meson' daqui de cima...
+          # Meson foi removido do apt-get e movido para o pip3 para garantir a versão mais recente (>= 1.4.0)
           sudo apt-get install -y ninja-build flex bison python3-pip curl unzip pkg-config
-          # ...e coloquei aqui embaixo para baixar a versão mais nova via pip!
           pip3 install meson mako --break-system-packages
 
       - name: Download and Setup Android NDK
@@ -37,12 +36,12 @@ jobs:
       - name: Apply KGSL Patch
         run: |
           cd mesa
-          # Aplica o patch KGSL que você salvou no seu repositório
+          # Certifique-se de que o arquivo de patch existe na pasta 'patches' do seu repositório!
           patch -p1 < ../patches/0014-freedreno-kgsl-experimental.patch
 
       - name: Setup Meson Cross-File
         run: |
-          # Cria o arquivo para ensinar o Meson a usar o compilador do Android NDK
+          # Ensina o Meson a usar o compilador cruzado do Android NDK
           cat <<EOF > mesa/android-aarch64.txt
           [binaries]
           ar = '$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar'
@@ -63,10 +62,7 @@ jobs:
       - name: Configure Build (Meson)
         run: |
           cd mesa
-          
-          # A mágica acontece aqui. Desativamos o X11 e GLX do Mesa,
-          # ativamos a plataforma Android (para ter AHardwareBuffer na libEGL)
-          # e forçamos o Freedreno a usar o KGSL.
+          # Configuração: Desativa X11/GLX/GBM, ativa Android (AHardwareBuffer) e Freedreno via KGSL
           meson setup build --cross-file android-aarch64.txt \
             -Dbuildtype=release \
             -Dplatforms=android \
@@ -91,11 +87,10 @@ jobs:
       - name: Collect Artifacts
         run: |
           mkdir -p freedreno-libs
-          # A libEGL e libGLESv2 são as que o seu JNI (glx_freedreno.c) carrega via dlopen()
+          # Coleta apenas as bibliotecas essenciais para o in-process JNI
           cp mesa/build/src/egl/libEGL_mesa.so freedreno-libs/
           cp mesa/build/src/mapi/es2api/libGLESv2_mesa.so freedreno-libs/
           cp mesa/build/src/mapi/shared-glapi/libglapi.so freedreno-libs/
-          # O driver Gallium em si geralmente compila como libgallium_dri.so na pasta de módulos
           find mesa/build -name "*_dri.so" -exec cp {} freedreno-libs/ \;
           
       - name: Upload Artifacts
