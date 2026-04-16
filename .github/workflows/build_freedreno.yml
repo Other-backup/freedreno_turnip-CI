@@ -1,7 +1,7 @@
 name: Build Freedreno KGSL (Winlator GLX)
 
 on:
-  workflow_dispatch: # Permite executar manualmente no painel do GitHub
+  workflow_dispatch: # Permite a execução manual no separador Actions
 
 jobs:
   build:
@@ -9,7 +9,7 @@ jobs:
     
     env:
       NDK_VER: "android-ndk-r26c"
-      # API 29 (Android 10) é crucial para ativar o suporte nativo a ELF TLS e evitar erros do linker
+      # API 29 (Android 10) é obrigatória para suporte nativo a ELF TLS no Mesa recente
       API_LEVEL: "29" 
       
     steps:
@@ -20,7 +20,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build flex bison python3-pip curl unzip pkg-config
-          # Instalamos o meson e o mako via pip para garantir as versões mais recentes (>= 1.4.0)
+          # Instalamos o meson e o mako via pip para garantir a versão >= 1.4.0
           pip3 install meson mako --break-system-packages
 
       - name: Setup Android NDK
@@ -28,16 +28,14 @@ jobs:
           cd $GITHUB_WORKSPACE
           curl -sLO https://dl.google.com/android/repository/${NDK_VER}-linux.zip
           unzip -q ${NDK_VER}-linux.zip
-          # Exporta o NDK_HOME e adiciona o compilador do NDK diretamente no PATH do sistema
           echo "NDK_HOME=$GITHUB_WORKSPACE/${NDK_VER}" >> $GITHUB_ENV
           echo "$GITHUB_WORKSPACE/${NDK_VER}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
 
       - name: Setup Cross-File and Env
         run: |
-          # Cria a pasta onde o libdrm será instalado localmente
           mkdir -p $GITHUB_WORKSPACE/prefix
           
-          # Ficheiro limpo do compilador cruzado
+          # Ficheiro de compilação cruzada para o NDK
           cat <<EOF > $GITHUB_WORKSPACE/android-aarch64.txt
           [binaries]
           c = 'aarch64-linux-android${API_LEVEL}-clang'
@@ -53,7 +51,7 @@ jobs:
           endian = 'little'
           EOF
           
-          # Força o pkg-config a procurar dependências APENAS no nosso prefixo (onde a libdrm vai ficar)
+          # Configura o pkg-config para encontrar a libdrm que vamos compilar
           echo "PKG_CONFIG_LIBDIR=$GITHUB_WORKSPACE/prefix/lib/pkgconfig:$GITHUB_WORKSPACE/prefix/lib/aarch64-linux-android/pkgconfig:$GITHUB_WORKSPACE/prefix/share/pkgconfig" >> $GITHUB_ENV
 
       - name: Build and Install libdrm
@@ -61,25 +59,12 @@ jobs:
           cd $GITHUB_WORKSPACE
           git clone --depth 1 https://gitlab.freedesktop.org/mesa/drm.git libdrm
           cd libdrm
-          
-          # Compila a libdrm ativando apenas o driver Freedreno para ser rápido
           meson setup build --cross-file ../android-aarch64.txt \
             --prefix=$GITHUB_WORKSPACE/prefix \
-            -Dintel=disabled \
-            -Dradeon=disabled \
-            -Damdgpu=disabled \
-            -Dnouveau=disabled \
-            -Dvmwgfx=disabled \
-            -Domap=disabled \
-            -Dexynos=disabled \
-            -Dfreedreno=enabled \
-            -Dtegra=disabled \
-            -Detnaviv=disabled \
-            -Dcairo-tests=disabled \
-            -Dman-pages=disabled \
-            -Dvalgrind=disabled \
-            -Dtests=false
-            
+            -Dintel=disabled -Dradeon=disabled -Damdgpu=disabled -Dnouveau=disabled \
+            -Dvmwgfx=disabled -Domap=disabled -Dexynos=disabled -Dfreedreno=enabled \
+            -Dtegra=disabled -Detnaviv=disabled -Dcairo-tests=disabled -Dman-pages=disabled \
+            -Dvalgrind=disabled -Dtests=false
           ninja -C build install
 
       - name: Clone and Patch Mesa
@@ -87,15 +72,12 @@ jobs:
           cd $GITHUB_WORKSPACE
           git clone --depth 1 -b main https://gitlab.freedesktop.org/mesa/mesa.git
           cd mesa
-          
-          # Aplica o patch KGSL (certifique-se de que o patch está em patches/0014-freedreno-kgsl-experimental.patch)
+          # Aplica o patch KGSL (o ficheiro deve estar em patches/0014-freedreno-kgsl-experimental.patch)
           patch -p1 < ../patches/0014-freedreno-kgsl-experimental.patch
 
       - name: Configure and Build Mesa
         run: |
           cd $GITHUB_WORKSPACE/mesa
-          
-          # O Mesa vai compilar com suporte perfeito a TLS (API 29) e AHardwareBuffer
           meson setup build --cross-file ../android-aarch64.txt \
             --prefix=$GITHUB_WORKSPACE/prefix \
             -Dbuildtype=release \
@@ -112,7 +94,6 @@ jobs:
             -Dglx=disabled \
             -Dgbm=disabled \
             -Dshared-glapi=enabled
-            
           ninja -C build
 
       - name: Collect Artifacts
@@ -120,11 +101,12 @@ jobs:
           mkdir -p $GITHUB_WORKSPACE/freedreno-libs
           cd $GITHUB_WORKSPACE/mesa/build
           
-          # O "find" procura os ficheiros em qualquer subpasta, com ou sem o sufixo "_mesa", garantindo que nada falha
-          find . -name "libEGL*.so" -exec cp {} $GITHUB_WORKSPACE/freedreno-libs/ \;
-          find . -name "libGLESv2*.so" -exec cp {} $GITHUB_WORKSPACE/freedreno-libs/ \;
-          find . -name "libglapi*.so" -exec cp {} $GITHUB_WORKSPACE/freedreno-libs/ \;
-          find . -name "*_dri.so" -exec cp {} $GITHUB_WORKSPACE/freedreno-libs/ \;
+          # O parâmetro -L é vital para copiar o ficheiro real e não o atalho (symlink)
+          # O sufixo .so* garante que apanhamos bibliotecas versionadas (ex: libglapi.so.0)
+          find . -name "libEGL*.so*" -exec cp -L {} $GITHUB_WORKSPACE/freedreno-libs/ \;
+          find . -name "libGLESv2*.so*" -exec cp -L {} $GITHUB_WORKSPACE/freedreno-libs/ \;
+          find . -name "libglapi*.so*" -exec cp -L {} $GITHUB_WORKSPACE/freedreno-libs/ \;
+          find . -name "*_dri.so" -exec cp -L {} $GITHUB_WORKSPACE/freedreno-libs/ \;
           
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
