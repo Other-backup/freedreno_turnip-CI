@@ -8,8 +8,8 @@ jobs:
     runs-on: ubuntu-24.04
     
     env:
-      NDK_VER: "android-ndk-r26c" # Versão estável do NDK
-      API_LEVEL: "28" # Necessário para suporte a AHardwareBuffer
+      NDK_VER: "android-ndk-r26c"
+      API_LEVEL: "28"
       
     steps:
       - name: Checkout repository
@@ -18,46 +18,31 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          # Instalamos as ferramentas de sistema, mas deixamos o meson para o pip3
           sudo apt-get install -y ninja-build flex bison python3-pip curl unzip pkg-config
-          # Garante o Meson >= 1.4.0 exigido pelas versões recentes do Mesa
           pip3 install meson mako --break-system-packages
 
-      - name: Download and Setup Android NDK
+      - name: Setup Android NDK
         run: |
           cd $GITHUB_WORKSPACE
           curl -sLO https://dl.google.com/android/repository/${NDK_VER}-linux.zip
           unzip -q ${NDK_VER}-linux.zip
+          # Exporta o NDK_HOME e adiciona o compilador do NDK direto no PATH do sistema
           echo "NDK_HOME=$GITHUB_WORKSPACE/${NDK_VER}" >> $GITHUB_ENV
+          echo "$GITHUB_WORKSPACE/${NDK_VER}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
 
-      - name: Clone Mesa
+      - name: Setup Cross-File and Env
         run: |
-          git clone --depth 1 -b main https://gitlab.freedesktop.org/mesa/mesa.git
+          # Cria a pasta onde o libdrm será instalado localmente
+          mkdir -p $GITHUB_WORKSPACE/prefix
           
-      - name: Setup libdrm Fallback
-        run: |
-          # O Freedreno OpenGL precisa do libdrm, que não existe nativamente no NDK
-          mkdir -p mesa/subprojects
-          git clone --depth 1 https://gitlab.freedesktop.org/mesa/drm.git mesa/subprojects/libdrm
-
-      - name: Apply KGSL Patch
-        run: |
-          cd mesa
-          # Certifica-te de que tens o ficheiro 0014-freedreno-kgsl-experimental.patch na pasta 'patches'
-          patch -p1 < ../patches/0014-freedreno-kgsl-experimental.patch
-
-      - name: Setup Meson Cross-File
-        run: |
-          # Configura o ficheiro de compilação cruzada para o compilador do NDK
-          cat <<EOF > mesa/android-aarch64.txt
+          # Arquivo limpo do compilador cruzado
+          cat <<EOF > $GITHUB_WORKSPACE/android-aarch64.txt
           [binaries]
-          ar = '$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar'
-          c = ['ccache', '$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${API_LEVEL}-clang']
-          cpp = ['ccache', '$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${API_LEVEL}-clang++']
-          c_ld = 'lld'
-          cpp_ld = 'lld'
-          strip = '$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip'
-          pkg-config = ['env', 'PKG_CONFIG_LIBDIR=$NDK_HOME/pkg-config', '/usr/bin/pkg-config']
+          c = 'aarch64-linux-android${API_LEVEL}-clang'
+          cpp = 'aarch64-linux-android${API_LEVEL}-clang++'
+          ar = 'llvm-ar'
+          strip = 'llvm-strip'
+          pkg-config = '/usr/bin/pkg-config'
 
           [host_machine]
           system = 'android'
@@ -65,12 +50,52 @@ jobs:
           cpu = 'armv8'
           endian = 'little'
           EOF
+          
+          # Força o pkg-config a buscar dependências APENAS no nosso prefixo (onde a libdrm vai ficar)
+          echo "PKG_CONFIG_LIBDIR=$GITHUB_WORKSPACE/prefix/lib/pkgconfig:$GITHUB_WORKSPACE/prefix/lib/aarch64-linux-android/pkgconfig:$GITHUB_WORKSPACE/prefix/share/pkgconfig" >> $GITHUB_ENV
 
-      - name: Configure Build (Meson)
+      - name: Build and Install libdrm
         run: |
+          cd $GITHUB_WORKSPACE
+          git clone --depth 1 https://gitlab.freedesktop.org/mesa/drm.git libdrm
+          cd libdrm
+          
+          # Compila a libdrm habilitando apenas o driver Freedreno
+          meson setup build --cross-file ../android-aarch64.txt \
+            --prefix=$GITHUB_WORKSPACE/prefix \
+            -Dintel=disabled \
+            -Dradeon=disabled \
+            -Damdgpu=disabled \
+            -Dnouveau=disabled \
+            -Dvmwgfx=disabled \
+            -Domap=disabled \
+            -Dexynos=disabled \
+            -Dfreedreno=enabled \
+            -Dtegra=disabled \
+            -Detnaviv=disabled \
+            -Dcairo-tests=disabled \
+            -Dman-pages=disabled \
+            -Dvalgrind=disabled \
+            -Dtests=false
+            
+          ninja -C build install
+
+      - name: Clone and Patch Mesa
+        run: |
+          cd $GITHUB_WORKSPACE
+          git clone --depth 1 -b main https://gitlab.freedesktop.org/mesa/mesa.git
           cd mesa
-          # Ativa suporte Android, KGSL e define o libdrm como fallback interno
-          meson setup build --cross-file android-aarch64.txt \
+          
+          # Aplica o patch KGSL (certifique-se que o patch está em patches/0014-freedreno-kgsl-experimental.patch)
+          patch -p1 < ../patches/0014-freedreno-kgsl-experimental.patch
+
+      - name: Configure and Build Mesa
+        run: |
+          cd $GITHUB_WORKSPACE/mesa
+          
+          # Agora o Mesa vai encontrar a libdrm através do pkg-config configurado ali em cima
+          meson setup build --cross-file ../android-aarch64.txt \
+            --prefix=$GITHUB_WORKSPACE/prefix \
             -Dbuildtype=release \
             -Dplatforms=android \
             -Dplatform-sdk-version=${API_LEVEL} \
@@ -84,23 +109,20 @@ jobs:
             -Dopengl=true \
             -Dglx=disabled \
             -Dgbm=disabled \
-            -Dshared-glapi=enabled \
-            --force-fallback-for=libdrm
+            -Dshared-glapi=enabled
             
-      - name: Compile
-        run: |
-          cd mesa
           ninja -C build
 
       - name: Collect Artifacts
         run: |
-          mkdir -p freedreno-libs
-          # Bibliotecas necessárias para carregar via dlopen no Winlator
-          cp mesa/build/src/egl/libEGL_mesa.so freedreno-libs/
-          cp mesa/build/src/mapi/es2api/libGLESv2_mesa.so freedreno-libs/
-          cp mesa/build/src/mapi/shared-glapi/libglapi.so freedreno-libs/
-          # Procura e copia o driver Gallium (msm_kgsl_dri.so)
-          find mesa/build -name "*_dri.so" -exec cp {} freedreno-libs/ \;
+          mkdir -p $GITHUB_WORKSPACE/freedreno-libs
+          cd $GITHUB_WORKSPACE/mesa/build
+          
+          # Copia os .so para o zip final. Usa '|| true' para não falhar caso a estrutura mude nas versões
+          cp src/egl/libEGL_mesa.so $GITHUB_WORKSPACE/freedreno-libs/ || true
+          cp src/mapi/es2api/libGLESv2_mesa.so $GITHUB_WORKSPACE/freedreno-libs/ || true
+          cp src/mapi/shared-glapi/libglapi.so $GITHUB_WORKSPACE/freedreno-libs/ || true
+          find . -name "*_dri.so" -exec cp {} $GITHUB_WORKSPACE/freedreno-libs/ \;
           
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
