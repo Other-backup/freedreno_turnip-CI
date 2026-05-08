@@ -48,6 +48,35 @@ build_lib_for_android(){
     sed -i 's/native_buffer->handle->/((const native_handle_t \*)native_buffer->handle)->/g' src/vulkan/runtime/vk_android.c || true
     sed -i 's/anb->handle->/((const native_handle_t \*)anb->handle)->/g' src/vulkan/runtime/vk_android.c || true
 
+    python3 - src/freedreno/common/freedreno_devices.py <<'PYEOF'
+import sys, re
+
+path = sys.argv[1]
+with open(path) as f:
+    content = f.read()
+
+def patch_block(text, block_name, old_val, new_val):
+    block_re = re.compile(
+        rf'({re.escape(block_name)}\s*=\s*\[)(.*?)(\])',
+        re.DOTALL
+    )
+    def replacer(m):
+        inner = re.sub(
+            rf'(REG_A6XX_PC_MODE_CNTL,\s*){re.escape(old_val)}',
+            rf'\g<1>{new_val}',
+            m.group(2)
+        )
+        return m.group(1) + inner + m.group(3)
+    return block_re.sub(replacer, text)
+
+for block in ('a730_raw_magic_regs', 'a740_raw_magic_regs'):
+    content = patch_block(content, block, '0x0000003f', '0x00001f1f')
+    print(f"PC_MODE_CNTL patched: {block}")
+
+with open(path, 'w') as f:
+    f.write(content)
+PYEOF
+
     mkdir -p "$workdir/bin"
     ln -sf "$ndk/clang" "$workdir/bin/cc"
     ln -sf "$ndk/clang++" "$workdir/bin/c++"
@@ -122,7 +151,7 @@ EOF
     fi
 
     cd "/tmp/turnip-main/lib"
-    
+
     cat <<EOF >"meta.json"
 {
   "schemaVersion": 1,
