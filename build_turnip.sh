@@ -15,7 +15,7 @@ title() { echo -e "\n${cyan}═════════════════�
           echo -e "${cyan}  $*${nc}";
           echo -e "${cyan}══════════════════════════════════════${nc}"; }
 
-deps="git ninja patchelf unzip curl pip flex bison zip glslangValidator python3 patch ccache"
+deps="git ninja patchelf unzip curl pip flex bison zip glslangValidator python3 patch"
 workdir="$(pwd)/turnip_workdir"
 ndkver="android-ndk-r29"
 ndk="$workdir/$ndkver/toolchains/llvm/prebuilt/linux-x86_64/bin"
@@ -78,8 +78,8 @@ write_cross_files() {
     cat <<EOF >"android-aarch64.txt"
 [binaries]
 ar      = '$ndk/llvm-ar'
-c       = ['ccache', '$ndk/aarch64-linux-android${cver}-clang']
-cpp     = ['ccache', '$ndk/aarch64-linux-android${cver}-clang++',
+c       = '$ndk/aarch64-linux-android${cver}-clang'
+cpp     = '$ndk/aarch64-linux-android${cver}-clang++',
            '-fno-exceptions', '-fno-unwind-tables',
            '-fno-asynchronous-unwind-tables',
            '--start-no-unused-arguments', '-static-libstdc++',
@@ -98,8 +98,8 @@ EOF
 
     cat <<EOF >"native.txt"
 [build_machine]
-c          = ['ccache', 'clang']
-cpp        = ['ccache', 'clang++']
+c          = 'clang'
+cpp        = 'clang++'
 ar         = 'llvm-ar'
 strip      = 'llvm-strip'
 c_ld       = 'ld.lld'
