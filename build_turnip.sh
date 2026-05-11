@@ -1,140 +1,141 @@
 #!/bin/bash -e
 set -o pipefail
 
-green='\033[0;32m'
-yellow='\033[1;33m'
-red='\033[0;31m'
-cyan='\033[0;36m'
-nc='\033[0m'
-
-log()   { echo -e "${green}[✓] $*${nc}"; }
-info()  { echo -e "${cyan}[*] $*${nc}"; }
-warn()  { echo -e "${yellow}[!] $*${nc}"; }
-error() { echo -e "${red}[✗] $*${nc}"; exit 1; }
-title() { echo -e "\n${cyan}══════════════════════════════════════${nc}";
-          echo -e "${cyan}  $*${nc}";
-          echo -e "${cyan}══════════════════════════════════════${nc}"; }
-
-deps="git ninja patchelf unzip curl pip flex bison zip glslangValidator python3 patch ccache"
+deps="git meson ninja patchelf unzip curl pip flex bison zip glslangValidator python3 patch"
 workdir="$(pwd)/turnip_workdir"
 ndkver="android-ndk-r29"
 ndk="$workdir/$ndkver/toolchains/llvm/prebuilt/linux-x86_64/bin"
 BUILD_VERSION="${BUILD_VERSION:-1.0}"
 
-MESA_MAIN="https://gitlab.freedesktop.org/mesa/mesa.git"
-MESA_A8XX="https://github.com/whitebelyash/mesa-tu8.git"
-PATCH_8G2="https://raw.githubusercontent.com/Other-backup/freedreno_turnip-CI/normal/8g2_ui_glitch.patch"
-MR_A7XX=41451
+run_all(){
+    check_deps
+    prepare_workdir
+    build_variant "A8xx"
+    build_variant "A6xx"
+    build_variant "A7xx"
+    build_variant "A7xx_OneUI"
+}
 
-check_deps() {
-    title "Verificando dependências"
-    local missing=()
-    for dep in $deps; do
-        command -v "$dep" >/dev/null 2>&1 || missing+=("$dep")
+check_deps(){
+    for deps_chk in $deps; do
+        if ! command -v "$deps_chk" >/dev/null 2>&1 ; then
+            exit 1
+        fi
     done
-    if ! command -v meson >/dev/null 2>&1; then
-        info "Instalando meson via pip..."
-        pip install meson --break-system-packages &>/dev/null || missing+=("meson")
-    fi
-    [ ${#missing[@]} -gt 0 ] && error "Dependências faltando: ${missing[*]}"
-    pip install mako --break-system-packages &>/dev/null || true
-    log "Dependências OK"
+    pip install mako --break-system-packages &> /dev/null || true
 }
 
-prepare_ndk() {
-    title "Preparando NDK ($ndkver)"
-    mkdir -p "$workdir"
-    cd "$workdir"
+prepare_workdir(){
+    mkdir -p "$workdir" && cd "$workdir"
+
     if [ ! -d "$ndkver" ]; then
-        info "Baixando NDK..."
-        curl -sL "https://dl.google.com/android/repository/${ndkver}-linux.zip" \
-             -o "${ndkver}-linux.zip"
-        unzip -q "${ndkver}-linux.zip"
-        rm -f "${ndkver}-linux.zip"
+        curl -sL "https://dl.google.com/android/repository/${ndkver}-linux.zip" -o "${ndkver}-linux.zip" &> /dev/null
+        unzip -q "${ndkver}-linux.zip" &> /dev/null
     fi
-    log "NDK pronto em $workdir/$ndkver"
 }
 
-setup_toolchain_env() {
+build_variant(){
+    local variant=$1
+    cd "$workdir"
+    rm -rf mesa
+
+    if [ "$variant" == "A8xx" ]; then
+        git clone "https://github.com/whitebelyash/mesa-tu8.git" --depth=1 --no-single-branch mesa
+        cd mesa
+        git checkout origin/gen8
+        echo "#define TUGEN8_DRV_VERSION \"\"" > ./src/freedreno/vulkan/tu_version.h
+        sed -i 's/ (%s)//g' src/freedreno/vulkan/tu_device.cc || true
+        sed -i 's/ (%s)//g' src/freedreno/vulkan/tu_device.c || true
+
+    elif [ "$variant" == "A6xx" ]; then
+        git clone "https://gitlab.freedesktop.org/mesa/mesa.git" --depth=1 -b main mesa
+        cd mesa
+        sed -i '/static inline VkResult tu_bo_init_new_cached/,/^}/d' src/freedreno/vulkan/tu_device.h || true
+        find src/freedreno/vulkan -type f -exec sed -i 's/tu_bo_init_new_cached/tu_bo_init_new/g' {} + || true
+
+    elif [ "$variant" == "A7xx" ]; then
+        git clone "https://gitlab.freedesktop.org/mesa/mesa.git" --depth=100 -b main mesa
+        cd mesa
+        git config user.email "build@turnip.com"
+        git config user.name "Builder"
+        git fetch origin refs/merge-requests/41451/head:mr
+        git merge --no-edit mr
+        sed -i '/a7xx_gen1 = GPUProps(/a \        has_early_preamble = False,' src/freedreno/common/freedreno_devices.py || true
+
+    elif [ "$variant" == "A7xx_OneUI" ]; then
+        git clone "https://gitlab.freedesktop.org/mesa/mesa.git" --depth=100 -b main mesa
+        cd mesa
+        git config user.email "build@turnip.com"
+        git config user.name "Builder"
+        git fetch origin refs/merge-requests/41451/head:mr
+        git merge --no-edit mr
+        curl -sL "https://raw.githubusercontent.com/Other-backup/freedreno_turnip-CI/normal/8g2_ui_glitch.patch" -o 8g2_ui_glitch.patch
+        patch -p1 < 8g2_ui_glitch.patch || true
+        sed -i '/a7xx_gen1 = GPUProps(/a \        has_early_preamble = False,' src/freedreno/common/freedreno_devices.py || true
+    fi
+
+    sed -i 's/typedef const native_handle_t\* buffer_handle_t;/typedef void\* buffer_handle_t;/g' include/android_stub/cutils/native_handle.h || true
+    sed -i 's/, hnd->handle/, (void \*)hnd->handle/g' src/util/u_gralloc/u_gralloc_fallback.c || true
+    sed -i 's/native_buffer->handle->/((const native_handle_t \*)native_buffer->handle)->/g' src/vulkan/runtime/vk_android.c || true
+    sed -i 's/anb->handle->/((const native_handle_t \*)anb->handle)->/g' src/vulkan/runtime/vk_android.c || true
+
+    find src/freedreno/vulkan -type f -name "*.c*" -exec sed -i 's/"Turnip Adreno (TM) %s[^"]*"/"Turnip Adreno (TM) %s"/g' {} + || true
+    find src/freedreno/vulkan -type f -name "*.c*" -exec sed -i 's/"turnip Mesa driver (whitebelyash branch)"/"Turnip"/g' {} + || true
+    find src/freedreno/vulkan -type f -name "*.c*" -exec sed -i 's/"turnip Mesa driver"/"Turnip"/g' {} + || true
+    find src/freedreno/vulkan -type f -name "*.c*" -exec sed -i 's/"Mesa " PACKAGE_VERSION MESA_GIT_SHA1/""/g' {} + || true
+
     mkdir -p "$workdir/bin"
-    ln -sf "$ndk/clang"   "$workdir/bin/cc"
+    ln -sf "$ndk/clang" "$workdir/bin/cc"
     ln -sf "$ndk/clang++" "$workdir/bin/c++"
     export PATH="$workdir/bin:$ndk:$PATH"
-    export CC=clang  CXX=clang++
-    export AR=llvm-ar  RANLIB=llvm-ranlib  STRIP=llvm-strip
-    export OBJDUMP=llvm-objdump  OBJCOPY=llvm-objcopy
+    export CC=clang
+    export CXX=clang++
+    export AR=llvm-ar
+    export RANLIB=llvm-ranlib
+    export STRIP=llvm-strip
+    export OBJDUMP=llvm-objdump
+    export OBJCOPY=llvm-objcopy
     export LDFLAGS="-fuse-ld=lld"
-}
 
-detect_clang_ver() {
     local cver="36"
     [ ! -f "$ndk/aarch64-linux-android${cver}-clang" ] && cver="35"
     [ ! -f "$ndk/aarch64-linux-android${cver}-clang" ] && cver="34"
-    echo "$cver"
-}
 
-write_cross_files() {
-    local cver="$1"
     cat <<EOF >"android-aarch64.txt"
 [binaries]
-ar      = '$ndk/llvm-ar'
-c       = ['ccache', '$ndk/aarch64-linux-android${cver}-clang']
-cpp     = ['ccache', '$ndk/aarch64-linux-android${cver}-clang++',
-           '-fno-exceptions', '-fno-unwind-tables',
-           '-fno-asynchronous-unwind-tables',
-           '--start-no-unused-arguments', '-static-libstdc++',
-           '--end-no-unused-arguments']
-c_ld    = '$ndk/ld.lld'
-cpp_ld  = '$ndk/ld.lld'
-strip   = '$ndk/llvm-strip'
+ar = '$ndk/llvm-ar'
+c = ['$ndk/aarch64-linux-android${cver}-clang']
+cpp = ['$ndk/aarch64-linux-android${cver}-clang++', '-fno-exceptions', '-fno-unwind-tables', '-fno-asynchronous-unwind-tables', '--start-no-unused-arguments', '-static-libstdc++', '--end-no-unused-arguments']
+c_ld = '$ndk/ld.lld'
+cpp_ld = '$ndk/ld.lld'
+strip = '$ndk/llvm-strip'
 pkg-config = ['env', 'PKG_CONFIG_LIBDIR=$ndk/pkg-config', '/usr/bin/pkg-config']
 
 [host_machine]
-system     = 'android'
+system = 'android'
 cpu_family = 'aarch64'
-cpu        = 'armv8'
-endian     = 'little'
+cpu = 'armv8'
+endian = 'little'
 EOF
 
     cat <<EOF >"native.txt"
 [build_machine]
-c          = ['ccache', 'clang']
-cpp        = ['ccache', 'clang++']
-ar         = 'llvm-ar'
-strip      = 'llvm-strip'
-c_ld       = 'ld.lld'
-cpp_ld     = 'ld.lld'
-system     = 'linux'
+c = ['clang']
+cpp = ['clang++']
+ar = 'llvm-ar'
+strip = 'llvm-strip'
+c_ld = 'ld.lld'
+cpp_ld = 'ld.lld'
+system = 'linux'
 cpu_family = 'x86_64'
-cpu        = 'x86_64'
-endian     = 'little'
+cpu = 'x86_64'
+endian = 'little'
 EOF
-}
-
-apply_android_stub_fixes() {
-    info "Aplicando Android stub fixes..."
-    sed -i 's/typedef const native_handle_t\* buffer_handle_t;/typedef void\* buffer_handle_t;/g' \
-        include/android_stub/cutils/native_handle.h || true
-    sed -i 's/, hnd->handle/, (void \*)hnd->handle/g' \
-        src/util/u_gralloc/u_gralloc_fallback.c || true
-    sed -i 's/native_buffer->handle->/((const native_handle_t \*)native_buffer->handle)->/g' \
-        src/vulkan/runtime/vk_android.c || true
-    sed -i 's/anb->handle->/((const native_handle_t \*)anb->handle)->/g' \
-        src/vulkan/runtime/vk_android.c || true
-}
-
-meson_build_and_install() {
-    local prefix="$1"
-    local cver
-    cver=$(detect_clang_ver)
-    write_cross_files "$cver"
-
-    rm -rf build-android-aarch64
 
     meson setup build-android-aarch64 \
         --cross-file "android-aarch64.txt" \
-        --native-file  "native.txt" \
-        --prefix "$prefix" \
+        --native-file "native.txt" \
+        --prefix "/tmp/turnip-$variant" \
         -Dbuildtype=release \
         -Dstrip=true \
         -Dplatforms=android \
@@ -149,203 +150,29 @@ meson_build_and_install() {
         -Dandroid-libbacktrace=disabled
 
     ninja -C build-android-aarch64 install
-}
 
-package_zip() {
-    local prefix="$1"
-    local zip_name="$2"
-    local meta_name="$3"
-    local meta_desc="$4"
-    local meta_ver="$5"
+    if [ ! -f "/tmp/turnip-$variant/lib/libvulkan_freedreno.so" ]; then
+        exit 1
+    fi
 
-    [ ! -f "$prefix/lib/libvulkan_freedreno.so" ] && \
-        error "libvulkan_freedreno.so não encontrado — build falhou"
-
-    cd "$prefix/lib"
-    cat <<EOF > meta.json
+    cd "/tmp/turnip-$variant/lib"
+    
+    cat <<EOF >"meta.json"
 {
   "schemaVersion": 1,
-  "name": "$meta_name",
-  "description": "$meta_desc",
+  "name": "Turnip $variant",
+  "description": "Compiled variant: $variant",
   "author": "stevenmx",
   "packageVersion": "1",
   "vendor": "Mesa",
-  "driverVersion": "$meta_ver",
+  "driverVersion": "Vulkan",
   "minApi": 28,
   "libraryName": "libvulkan_freedreno.so"
 }
 EOF
-    local out="$workdir/${zip_name}-V${BUILD_VERSION}.zip"
-    zip -9 "$out" libvulkan_freedreno.so meta.json
-    log "Pacote gerado: $(basename "$out")"
+
+    zip -9 "/tmp/Turnip_${variant}_V${BUILD_VERSION}.zip" libvulkan_freedreno.so meta.json
+    cp "/tmp/Turnip_${variant}_V${BUILD_VERSION}.zip" "$workdir/"
 }
 
-build_a8xx() {
-    title "BUILD 1/4 — Turnip A8xx"
-    local srcdir="$workdir/mesa-a8xx"
-    local prefix="/tmp/turnip-a8xx"
-
-    rm -rf "$srcdir" "$prefix"
-    git clone "$MESA_A8XX" --depth=1 --no-single-branch "$srcdir"
-    cd "$srcdir"
-    git checkout "origin/gen8"
-
-    echo '#define TUGEN8_DRV_VERSION ""' > ./src/freedreno/vulkan/tu_version.h
-
-    sed -i 's/ (%s)//g' src/freedreno/vulkan/tu_device.cc 2>/dev/null || true
-    sed -i 's/ (%s)//g' src/freedreno/vulkan/tu_device.c  2>/dev/null || true
-
-    apply_android_stub_fixes
-    setup_toolchain_env
-    meson_build_and_install "$prefix"
-
-    package_zip "$prefix" \
-        "Turnip-A8xx" \
-        "Turnip A8xx" \
-        "Mesa tu8 fork — suporte A8xx (Adreno 8xx / Snapdragon 8 Gen 3+)" \
-        "Vulkan 1.4.348"
-}
-
-build_a6xx() {
-    title "BUILD 2/4 — Turnip A6xx"
-    local srcdir="$workdir/mesa-a6xx"
-    local prefix="/tmp/turnip-a6xx"
-
-    rm -rf "$srcdir" "$prefix"
-    git clone "$MESA_MAIN" --depth=1 -b main "$srcdir"
-    cd "$srcdir"
-
-    info "Aplicando fix A6xx (revert tu_bo_init_new_cached)..."
-    python3 - "src/freedreno/vulkan/tu_device.h" <<'PYEOF'
-import re, sys, os
-
-path = sys.argv[1]
-if not os.path.exists(path):
-    print(f"Arquivo não encontrado: {path}"); sys.exit(0)
-
-with open(path) as f:
-    content = f.read()
-
-pattern = (
-    r"/\* Use cached-coherent when available, for faster CPU readback\."
-    r"\s*\*/\s*static inline VkResult\s*tu_bo_init_new_cached[\s\S]*?\}\s*"
-)
-if re.search(pattern, content):
-    content = re.sub(pattern, "", content)
-    print("  Removida definição de tu_bo_init_new_cached de tu_device.h")
-else:
-    print("  tu_bo_init_new_cached não encontrado no header")
-
-with open(path, 'w') as f:
-    f.write(content)
-PYEOF
-
-    find src/freedreno/vulkan \( -name "*.cc" -o -name "*.c" \) \
-        -exec sed -i 's/tu_bo_init_new_cached/tu_bo_init_new/g' {} +
-    log "Chamadas tu_bo_init_new_cached substituídas por tu_bo_init_new"
-
-    apply_android_stub_fixes
-    setup_toolchain_env
-    meson_build_and_install "$prefix"
-
-    package_zip "$prefix" \
-        "Turnip-A6xx" \
-        "Turnip A6xx" \
-        "Mesa Main — fix A6xx: revert tu_bo_init_new_cached para tu_bo_init_new" \
-        "Vulkan 1.4"
-}
-
-build_a7xx() {
-    title "BUILD 3/4 — Turnip A7xx"
-    local srcdir="$workdir/mesa-a7xx"
-    local prefix="/tmp/turnip-a7xx"
-
-    rm -rf "$srcdir" "$prefix"
-    git clone "$MESA_MAIN" --depth=100 -b main "$srcdir"
-    cd "$srcdir"
-    git config user.email "ci@turnip.builder"
-    git config user.name  "Turnip CI"
-
-    info "Fazendo merge da MR ${MR_A7XX}..."
-    git fetch origin "refs/merge-requests/${MR_A7XX}/head" --depth=100
-    if ! git merge FETCH_HEAD --no-edit; then
-        warn "Conflitos no merge da MR ${MR_A7XX} — resolvendo (theirs)..."
-        git checkout --theirs . 2>/dev/null || true
-        git add -A
-        git -c core.editor=true merge --continue || true
-    fi
-    log "MR ${MR_A7XX} aplicada"
-
-    sed -i '/a7xx_gen1 = GPUProps(/a \        has_early_preamble = False,' \
-        src/freedreno/common/freedreno_devices.py || true
-
-    apply_android_stub_fixes
-    setup_toolchain_env
-    meson_build_and_install "$prefix"
-
-    package_zip "$prefix" \
-        "Turnip-A7xx" \
-        "Turnip A7xx" \
-        "Mesa Main + MR${MR_A7XX} + No Early Preamble (Adreno 7xx)" \
-        "Vulkan 1.4.348"
-}
-
-build_a7xx_oneui() {
-    title "BUILD 4/4 — Turnip A7xx OneUI"
-    local srcdir="$workdir/mesa-a7xx-oneui"
-    local prefix="/tmp/turnip-a7xx-oneui"
-
-    rm -rf "$srcdir" "$prefix"
-    git clone "$MESA_MAIN" --depth=100 -b main "$srcdir"
-    cd "$srcdir"
-    git config user.email "ci@turnip.builder"
-    git config user.name  "Turnip CI"
-
-    info "Fazendo merge da MR ${MR_A7XX}..."
-    git fetch origin "refs/merge-requests/${MR_A7XX}/head" --depth=100
-    if ! git merge FETCH_HEAD --no-edit; then
-        warn "Conflitos no merge da MR ${MR_A7XX} — resolvendo (theirs)..."
-        git checkout --theirs . 2>/dev/null || true
-        git add -A
-        git -c core.editor=true merge --continue || true
-    fi
-    log "MR ${MR_A7XX} aplicada"
-
-    info "Aplicando patch OneUI (8G2 UI glitch fix)..."
-    curl -sL "$PATCH_8G2" -o 8g2_ui_glitch.patch
-    if patch -p1 < 8g2_ui_glitch.patch; then
-        log "Patch 8G2 aplicado com sucesso"
-    else
-        warn "Patch 8G2 teve rejeições — continuando mesmo assim"
-    fi
-
-    sed -i '/a7xx_gen1 = GPUProps(/a \        has_early_preamble = False,' \
-        src/freedreno/common/freedreno_devices.py || true
-
-    apply_android_stub_fixes
-    setup_toolchain_env
-    meson_build_and_install "$prefix"
-
-    package_zip "$prefix" \
-        "Turnip-A7xx-OneUI" \
-        "Turnip A7xx OneUI" \
-        "Mesa Main + MR${MR_A7XX} + No Early Preamble + OneUI/8G2 UI Glitch Fix" \
-        "Vulkan 1.4.348"
-}
-
-main() {
-    check_deps
-    prepare_ndk
-
-    build_a8xx
-    build_a6xx
-    build_a7xx
-    build_a7xx_oneui
-
-    title "Todas as builds concluídas!"
-    echo ""
-    echo "Zips gerados em $workdir:"
-    ls -lh "$workdir"/*.zip 2>/dev/null || warn "Nenhum zip encontrado"
-}
-
-main
+run_all
