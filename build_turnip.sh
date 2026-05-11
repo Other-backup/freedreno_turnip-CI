@@ -15,7 +15,7 @@ title() { echo -e "\n${cyan}═════════════════�
           echo -e "${cyan}  $*${nc}";
           echo -e "${cyan}══════════════════════════════════════${nc}"; }
 
-deps="git ninja patchelf unzip curl pip flex bison zip glslangValidator python3 patch"
+deps="git ninja patchelf unzip curl pip flex bison zip glslangValidator python3 patch ccache"
 workdir="$(pwd)/turnip_workdir"
 ndkver="android-ndk-r29"
 ndk="$workdir/$ndkver/toolchains/llvm/prebuilt/linux-x86_64/bin"
@@ -27,32 +27,32 @@ PATCH_8G2="https://raw.githubusercontent.com/Other-backup/freedreno_turnip-CI/no
 MR_A7XX=41451
 
 check_deps() {
-    title "Checking dependencies"
+    title "Verificando dependências"
     local missing=()
     for dep in $deps; do
         command -v "$dep" >/dev/null 2>&1 || missing+=("$dep")
     done
     if ! command -v meson >/dev/null 2>&1; then
-        info "Installing meson via pip..."
+        info "Instalando meson via pip..."
         pip install meson --break-system-packages &>/dev/null || missing+=("meson")
     fi
-    [ ${#missing[@]} -gt 0 ] && error "Missing dependencies: ${missing[*]}"
+    [ ${#missing[@]} -gt 0 ] && error "Dependências faltando: ${missing[*]}"
     pip install mako --break-system-packages &>/dev/null || true
-    log "Dependencies OK"
+    log "Dependências OK"
 }
 
 prepare_ndk() {
-    title "Preparing NDK ($ndkver)"
+    title "Preparando NDK ($ndkver)"
     mkdir -p "$workdir"
     cd "$workdir"
     if [ ! -d "$ndkver" ]; then
-        info "Downloading NDK..."
+        info "Baixando NDK..."
         curl -sL "https://dl.google.com/android/repository/${ndkver}-linux.zip" \
              -o "${ndkver}-linux.zip"
         unzip -q "${ndkver}-linux.zip"
         rm -f "${ndkver}-linux.zip"
     fi
-    log "NDK ready at $workdir/$ndkver"
+    log "NDK pronto em $workdir/$ndkver"
 }
 
 setup_toolchain_env() {
@@ -78,8 +78,8 @@ write_cross_files() {
     cat <<EOF >"android-aarch64.txt"
 [binaries]
 ar      = '$ndk/llvm-ar'
-c       = '$ndk/aarch64-linux-android${cver}-clang'
-cpp     = '$ndk/aarch64-linux-android${cver}-clang++',
+c       = ['ccache', '$ndk/aarch64-linux-android${cver}-clang']
+cpp     = ['ccache', '$ndk/aarch64-linux-android${cver}-clang++',
            '-fno-exceptions', '-fno-unwind-tables',
            '-fno-asynchronous-unwind-tables',
            '--start-no-unused-arguments', '-static-libstdc++',
@@ -98,8 +98,8 @@ EOF
 
     cat <<EOF >"native.txt"
 [build_machine]
-c          = 'clang'
-cpp        = 'clang++'
+c          = ['ccache', 'clang']
+cpp        = ['ccache', 'clang++']
 ar         = 'llvm-ar'
 strip      = 'llvm-strip'
 c_ld       = 'ld.lld'
@@ -112,7 +112,7 @@ EOF
 }
 
 apply_android_stub_fixes() {
-    info "Applying Android stub fixes..."
+    info "Aplicando Android stub fixes..."
     sed -i 's/typedef const native_handle_t\* buffer_handle_t;/typedef void\* buffer_handle_t;/g' \
         include/android_stub/cutils/native_handle.h || true
     sed -i 's/, hnd->handle/, (void \*)hnd->handle/g' \
@@ -159,7 +159,7 @@ package_zip() {
     local meta_ver="$5"
 
     [ ! -f "$prefix/lib/libvulkan_freedreno.so" ] && \
-        error "libvulkan_freedreno.so not found — build failed"
+        error "libvulkan_freedreno.so não encontrado — build falhou"
 
     cd "$prefix/lib"
     cat <<EOF > meta.json
@@ -177,7 +177,7 @@ package_zip() {
 EOF
     local out="$workdir/${zip_name}-V${BUILD_VERSION}.zip"
     zip -9 "$out" libvulkan_freedreno.so meta.json
-    log "Package ready: $(basename "$out")"
+    log "Pacote gerado: $(basename "$out")"
 }
 
 build_a8xx() {
@@ -202,7 +202,7 @@ build_a8xx() {
     package_zip "$prefix" \
         "Turnip-A8xx" \
         "Turnip A8xx" \
-        "Mesa tu8 fork — A8xx support (Adreno 8xx / Snapdragon 8 Gen 3+)" \
+        "Mesa tu8 fork — suporte A8xx (Adreno 8xx / Snapdragon 8 Gen 3+)" \
         "Vulkan 1.4.348"
 }
 
@@ -215,13 +215,13 @@ build_a6xx() {
     git clone "$MESA_MAIN" --depth=1 -b main "$srcdir"
     cd "$srcdir"
 
-    info "Applying A6xx fix (revert tu_bo_init_new_cached)..."
+    info "Aplicando fix A6xx (revert tu_bo_init_new_cached)..."
     python3 - "src/freedreno/vulkan/tu_device.h" <<'PYEOF'
 import re, sys, os
 
 path = sys.argv[1]
 if not os.path.exists(path):
-    print(f"File not found: {path}"); sys.exit(0)
+    print(f"Arquivo não encontrado: {path}"); sys.exit(0)
 
 with open(path) as f:
     content = f.read()
@@ -232,9 +232,9 @@ pattern = (
 )
 if re.search(pattern, content):
     content = re.sub(pattern, "", content)
-    print("  Removed tu_bo_init_new_cached definition from tu_device.h")
+    print("  Removida definição de tu_bo_init_new_cached de tu_device.h")
 else:
-    print("  tu_bo_init_new_cached not found in header")
+    print("  tu_bo_init_new_cached não encontrado no header")
 
 with open(path, 'w') as f:
     f.write(content)
@@ -242,7 +242,7 @@ PYEOF
 
     find src/freedreno/vulkan \( -name "*.cc" -o -name "*.c" \) \
         -exec sed -i 's/tu_bo_init_new_cached/tu_bo_init_new/g' {} +
-    log "Replaced tu_bo_init_new_cached calls with tu_bo_init_new"
+    log "Chamadas tu_bo_init_new_cached substituídas por tu_bo_init_new"
 
     apply_android_stub_fixes
     setup_toolchain_env
@@ -251,7 +251,7 @@ PYEOF
     package_zip "$prefix" \
         "Turnip-A6xx" \
         "Turnip A6xx" \
-        "Mesa Main — A6xx fix: revert tu_bo_init_new_cached to tu_bo_init_new" \
+        "Mesa Main — fix A6xx: revert tu_bo_init_new_cached para tu_bo_init_new" \
         "Vulkan 1.4"
 }
 
@@ -266,15 +266,15 @@ build_a7xx() {
     git config user.email "ci@turnip.builder"
     git config user.name  "Turnip CI"
 
-    info "Merging MR ${MR_A7XX}..."
+    info "Fazendo merge da MR ${MR_A7XX}..."
     git fetch origin "refs/merge-requests/${MR_A7XX}/head" --depth=100
     if ! git merge FETCH_HEAD --no-edit; then
-        warn "Conflicts merging MR ${MR_A7XX} — resolving (theirs)..."
+        warn "Conflitos no merge da MR ${MR_A7XX} — resolvendo (theirs)..."
         git checkout --theirs . 2>/dev/null || true
         git add -A
         git -c core.editor=true merge --continue || true
     fi
-    log "MR ${MR_A7XX} applied"
+    log "MR ${MR_A7XX} aplicada"
 
     sed -i '/a7xx_gen1 = GPUProps(/a \        has_early_preamble = False,' \
         src/freedreno/common/freedreno_devices.py || true
@@ -301,22 +301,22 @@ build_a7xx_oneui() {
     git config user.email "ci@turnip.builder"
     git config user.name  "Turnip CI"
 
-    info "Merging MR ${MR_A7XX}..."
+    info "Fazendo merge da MR ${MR_A7XX}..."
     git fetch origin "refs/merge-requests/${MR_A7XX}/head" --depth=100
     if ! git merge FETCH_HEAD --no-edit; then
-        warn "Conflicts merging MR ${MR_A7XX} — resolving (theirs)..."
+        warn "Conflitos no merge da MR ${MR_A7XX} — resolvendo (theirs)..."
         git checkout --theirs . 2>/dev/null || true
         git add -A
         git -c core.editor=true merge --continue || true
     fi
-    log "MR ${MR_A7XX} applied"
+    log "MR ${MR_A7XX} aplicada"
 
-    info "Applying OneUI patch (8G2 UI glitch fix)..."
+    info "Aplicando patch OneUI (8G2 UI glitch fix)..."
     curl -sL "$PATCH_8G2" -o 8g2_ui_glitch.patch
     if patch -p1 < 8g2_ui_glitch.patch; then
-        log "8G2 patch applied successfully"
+        log "Patch 8G2 aplicado com sucesso"
     else
-        warn "8G2 patch had rejections — continuing anyway"
+        warn "Patch 8G2 teve rejeições — continuando mesmo assim"
     fi
 
     sed -i '/a7xx_gen1 = GPUProps(/a \        has_early_preamble = False,' \
@@ -342,10 +342,10 @@ main() {
     build_a7xx
     build_a7xx_oneui
 
-    title "All builds complete!"
+    title "Todas as builds concluídas!"
     echo ""
-    echo "Zips generated at $workdir:"
-    ls -lh "$workdir"/*.zip 2>/dev/null || warn "No zip files found"
+    echo "Zips gerados em $workdir:"
+    ls -lh "$workdir"/*.zip 2>/dev/null || warn "Nenhum zip encontrado"
 }
 
 main
