@@ -40,9 +40,12 @@ build_variant(){
     rm -rf mesa
 
     if [ "$variant" == "A8xx" ]; then
-        git clone "https://github.com/whitebelyash/mesa-tu8.git" --depth=1 --no-single-branch mesa
+        git clone "https://github.com/whitebelyash/mesa-unified.git" --depth=100 --no-single-branch mesa
         cd mesa
         git checkout origin/gen8
+        git config user.email "build@turnip.com"
+        git config user.name "Builder"
+        git revert -n 60a14d62acb992ac343caf43de8b0e1efb41af6
         echo "#define TUGEN8_DRV_VERSION \"\"" > ./src/freedreno/vulkan/tu_version.h
 
     elif [ "$variant" == "A6xx" ]; then
@@ -76,11 +79,6 @@ build_variant(){
     sed -i 's/, hnd->handle/, (void \*)hnd->handle/g' src/util/u_gralloc/u_gralloc_fallback.c || true
     sed -i 's/native_buffer->handle->/((const native_handle_t \*)native_buffer->handle)->/g' src/vulkan/runtime/vk_android.c || true
     sed -i 's/anb->handle->/((const native_handle_t \*)anb->handle)->/g' src/vulkan/runtime/vk_android.c || true
-
-    find src/freedreno/vulkan -type f -name "*.c*" -exec sed -i 's/"Turnip Adreno (TM) %s[^"]*"/"Turnip Adreno (TM) %s%.0s"/g' {} + || true
-    find src/freedreno/vulkan -type f -name "*.c*" -exec sed -i 's/"turnip Mesa driver (whitebelyash branch)"/"Turnip"/g' {} + || true
-    find src/freedreno/vulkan -type f -name "*.c*" -exec sed -i 's/"turnip Mesa driver"/"Turnip"/g' {} + || true
-    find src/freedreno/vulkan -type f -name "*.c*" -exec sed -i 's/"Mesa " PACKAGE_VERSION MESA_GIT_SHA1/""/g' {} + || true
 
     mkdir -p "$workdir/bin"
     ln -sf "$ndk/clang" "$workdir/bin/cc"
@@ -155,7 +153,22 @@ EOF
 
     cd "/tmp/turnip-$variant/lib"
     
-    cat <<EOF >"meta.json"
+    if [ "$variant" == "A8xx" ]; then
+        cat <<EOF >"meta.json"
+{
+  "schemaVersion": 1,
+  "name": "Turnip Gen8 V29",
+  "description": "A8xx support",
+  "author": "stevenmx",
+  "packageVersion": "1",
+  "vendor": "Mesa",
+  "driverVersion": "Vulkan 1.4.348",
+  "minApi": 28,
+  "libraryName": "libvulkan_freedreno.so"
+}
+EOF
+    else
+        cat <<EOF >"meta.json"
 {
   "schemaVersion": 1,
   "name": "Turnip $variant",
@@ -168,6 +181,7 @@ EOF
   "libraryName": "libvulkan_freedreno.so"
 }
 EOF
+    fi
 
     zip -9 "/tmp/Turnip_${variant}_V${BUILD_VERSION}.zip" libvulkan_freedreno.so meta.json
     cp "/tmp/Turnip_${variant}_V${BUILD_VERSION}.zip" "$workdir/"
