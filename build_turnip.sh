@@ -44,8 +44,6 @@ build_variant(){
         cd mesa
         git checkout origin/gen8
         echo "#define TUGEN8_DRV_VERSION \"\"" > ./src/freedreno/vulkan/tu_version.h
-        sed -i 's/ (%s)//g' src/freedreno/vulkan/tu_device.cc || true
-        sed -i 's/ (%s)//g' src/freedreno/vulkan/tu_device.c || true
 
     elif [ "$variant" == "A6xx" ]; then
         git clone "https://gitlab.freedesktop.org/mesa/mesa.git" --depth=1 -b main mesa
@@ -79,7 +77,7 @@ build_variant(){
     sed -i 's/native_buffer->handle->/((const native_handle_t \*)native_buffer->handle)->/g' src/vulkan/runtime/vk_android.c || true
     sed -i 's/anb->handle->/((const native_handle_t \*)anb->handle)->/g' src/vulkan/runtime/vk_android.c || true
 
-    find src/freedreno/vulkan -type f -name "*.c*" -exec sed -i 's/"Turnip Adreno (TM) %s[^"]*"/"Turnip Adreno (TM) %s"/g' {} + || true
+    find src/freedreno/vulkan -type f -name "*.c*" -exec sed -i 's/"Turnip Adreno (TM) %s[^"]*"/"Turnip Adreno (TM) %s%.0s"/g' {} + || true
     find src/freedreno/vulkan -type f -name "*.c*" -exec sed -i 's/"turnip Mesa driver (whitebelyash branch)"/"Turnip"/g' {} + || true
     find src/freedreno/vulkan -type f -name "*.c*" -exec sed -i 's/"turnip Mesa driver"/"Turnip"/g' {} + || true
     find src/freedreno/vulkan -type f -name "*.c*" -exec sed -i 's/"Mesa " PACKAGE_VERSION MESA_GIT_SHA1/""/g' {} + || true
