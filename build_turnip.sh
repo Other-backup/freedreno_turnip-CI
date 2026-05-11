@@ -42,7 +42,7 @@ build_variant(){
     if [ "$variant" == "A8xx" ]; then
         git clone "https://github.com/whitebelyash/mesa-unified.git" --depth=100 --no-single-branch mesa
         cd mesa
-        git checkout origin/gen8
+        git checkout origin/turnip/gen8
         git config user.email "build@turnip.com"
         git config user.name "Builder"
         git revert -n 60a14d62acb992ac343caf43de8b0e1efb41af6
