@@ -45,14 +45,14 @@ build_variant(){
         git checkout origin/turnip/gen8
         git config user.email "build@turnip.com"
         git config user.name "Builder"
-        git revert -n 60a14d62acb992ac343caf43de8b0e1efb41af6
+        git revert -n 60a14d62acb992ac343caf43de8b0e1efb41af6 || true
         echo "#define TUGEN8_DRV_VERSION \"\"" > ./src/freedreno/vulkan/tu_version.h
 
     elif [ "$variant" == "A6xx" ]; then
         git clone "https://gitlab.freedesktop.org/mesa/mesa.git" --depth=1 -b main mesa
         cd mesa
-        sed -i '/static inline VkResult tu_bo_init_new_cached/,/^}/d' src/freedreno/vulkan/tu_device.h || true
-        find src/freedreno/vulkan -type f -exec sed -i 's/tu_bo_init_new_cached/tu_bo_init_new/g' {} + || true
+        sed -i '/tu_bo_init_new_cached/,/^}/d' src/freedreno/vulkan/tu_device.h || true
+        find src/freedreno/vulkan -type f ! -name "tu_device.h" -exec sed -i 's/tu_bo_init_new_cached/tu_bo_init_new/g' {} + || true
 
     elif [ "$variant" == "A7xx" ]; then
         git clone "https://gitlab.freedesktop.org/mesa/mesa.git" --depth=100 -b main mesa
@@ -79,6 +79,11 @@ build_variant(){
     sed -i 's/, hnd->handle/, (void \*)hnd->handle/g' src/util/u_gralloc/u_gralloc_fallback.c || true
     sed -i 's/native_buffer->handle->/((const native_handle_t \*)native_buffer->handle)->/g' src/vulkan/runtime/vk_android.c || true
     sed -i 's/anb->handle->/((const native_handle_t \*)anb->handle)->/g' src/vulkan/runtime/vk_android.c || true
+
+    find src/freedreno/vulkan -type f -name "*.c*" -exec sed -i 's/"Turnip Adreno (TM) %s[^"]*"/"Turnip Adreno (TM) %s%.0s"/g' {} + || true
+    find src/freedreno/vulkan -type f -name "*.c*" -exec sed -i 's/"turnip Mesa driver (whitebelyash branch)"/"Turnip"/g' {} + || true
+    find src/freedreno/vulkan -type f -name "*.c*" -exec sed -i 's/"turnip Mesa driver"/"Turnip"/g' {} + || true
+    find src/freedreno/vulkan -type f -name "*.c*" -exec sed -i 's/"Mesa " PACKAGE_VERSION MESA_GIT_SHA1/""/g' {} + || true
 
     mkdir -p "$workdir/bin"
     ln -sf "$ndk/clang" "$workdir/bin/cc"
