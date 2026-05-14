@@ -11,7 +11,6 @@ run_all(){
     check_deps
     prepare_workdir
     build_variant "A8xx"
-    build_variant "A6xx"
     build_variant "A7xx"
     build_variant "A7xx_OneUI"
 }
@@ -47,12 +46,6 @@ build_variant(){
         git config user.name "Builder"
         git revert -n 60a14d62acb992ac343caf43de8b0e1efb41af6 || true
         echo "#define TUGEN8_DRV_VERSION \"\"" > ./src/freedreno/vulkan/tu_version.h
-
-    elif [ "$variant" == "A6xx" ]; then
-        git clone "https://gitlab.freedesktop.org/mesa/mesa.git" --depth=1 -b main mesa
-        cd mesa
-        sed -i '/tu_bo_init_new_cached/,/^}/d' src/freedreno/vulkan/tu_device.h || true
-        find src/freedreno/vulkan -type f ! -name "tu_device.h" -exec sed -i 's/tu_bo_init_new_cached/tu_bo_init_new/g' {} + || true
 
     elif [ "$variant" == "A7xx" ]; then
         git clone "https://gitlab.freedesktop.org/mesa/mesa.git" --depth=100 -b main mesa
