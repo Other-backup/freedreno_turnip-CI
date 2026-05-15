@@ -53,7 +53,7 @@ build_variant(){
         git config user.email "build@turnip.com"
         git config user.name "Builder"
         git fetch origin refs/merge-requests/41451/head:mr
-        git merge --no-edit mr
+        git merge --no-edit --allow-unrelated-histories mr
         sed -i '/a7xx_gen1 = GPUProps(/a \        has_early_preamble = False,' src/freedreno/common/freedreno_devices.py || true
 
     elif [ "$variant" == "A7xx_OneUI" ]; then
@@ -62,7 +62,7 @@ build_variant(){
         git config user.email "build@turnip.com"
         git config user.name "Builder"
         git fetch origin refs/merge-requests/41451/head:mr
-        git merge --no-edit mr
+        git merge --no-edit --allow-unrelated-histories mr
         curl -sL "https://raw.githubusercontent.com/Other-backup/freedreno_turnip-CI/normal/8g2_ui_glitch.patch" -o 8g2_ui_glitch.patch
         patch -p1 < 8g2_ui_glitch.patch || true
         sed -i '/a7xx_gen1 = GPUProps(/a \        has_early_preamble = False,' src/freedreno/common/freedreno_devices.py || true
