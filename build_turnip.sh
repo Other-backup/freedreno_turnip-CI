@@ -49,12 +49,12 @@ build_variant(){
         echo "#define TUGEN8_DRV_VERSION \"\"" > ./src/freedreno/vulkan/tu_version.h
 
     elif [ "$variant" == "A6xx" ]; then
-        git clone "https://gitlab.freedesktop.org/mesa/mesa.git" mesa
+        git clone "https://gitlab.freedesktop.org/mesa/mesa.git" --depth=100 -b main mesa
         cd mesa
-        git config user.email "build@turnip.com"
-        git config user.name "Builder"
-        git revert -n 103887766cb288a7ec097af8c9f774ef6b0e1591 || true
-        git revert -n 83212054e07ba60dace89ee0c513eeb672228f2c || true
+        curl -sL "https://gitlab.freedesktop.org/mesa/mesa/-/commit/103887766cb288a7ec097af8c9f774ef6b0e1591.patch" | patch -p1 -R --no-backup-if-mismatch || true
+        curl -sL "https://gitlab.freedesktop.org/mesa/mesa/-/commit/83212054e07ba60dace89ee0c513eeb672228f2c.patch" | patch -p1 -R --no-backup-if-mismatch || true
+        sed -i '/tu_bo_init_new_cached/,/^}/d' src/freedreno/vulkan/tu_device.h || true
+        find src/freedreno/vulkan -type f ! -name "tu_device.h" -exec sed -i 's/tu_bo_init_new_cached/tu_bo_init_new/g' {} + || true
 
     elif [ "$variant" == "A7xx" ]; then
         git clone "https://gitlab.freedesktop.org/mesa/mesa.git" --depth=100 -b main mesa
