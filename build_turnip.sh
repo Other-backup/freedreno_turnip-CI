@@ -4,7 +4,7 @@ set -o pipefail
 green='\033[0;32m'
 nocolor='\033[0m'
 
-deps="ninja patchelf unzip curl pip flex bison zip git perl glslangValidator python3"
+deps="ninja patchelf unzip curl pip flex bison zip git perl glslangValidator python3 patch"
 workdir="$(pwd)/turnip_workdir"
 ndkver="android-ndk-r28"
 target_sdk="36" 
@@ -25,43 +25,41 @@ prepare_ndk(){
     export ANDROID_NDK_HOME="$workdir/$ndkver"
 }
 
-apply_a6xx_fix() {
-    echo -e "${green}Applying A6xx Fix: Reverting calls to tu_bo_init_new...${nocolor}"
+apply_kgsl_patch() {
+    echo -e "${green}Applying KGSL Memory Type Support Patch...${nocolor}"
     
-    # 1. Remove a definição da função "cached" do header (tu_device.h)
-    cat << 'EOF_PYTHON' > remove_cached_def.py
-import re
-import os
-
-file_path = "src/freedreno/vulkan/tu_device.h"
-
-if os.path.exists(file_path):
-    with open(file_path, 'r') as f:
-        content = f.read()
-
-    # Regex para encontrar e remover a função inteira e seu comentário
-    pattern = r"/\* Use cached-coherent when available, for faster CPU readback\.\s*\*/\s*static inline VkResult\s*tu_bo_init_new_cached[\s\S]*?\}\s*"
+    cat << 'EOF_PATCH' > kgsl_mem_fix.patch
+diff --git a/src/freedreno/vulkan/tu_knl_kgsl.cc b/src/freedreno/vulkan/tu_knl_kgsl.cc
+--- a/src/freedreno/vulkan/tu_knl_kgsl.cc
++++ b/src/freedreno/vulkan/tu_knl_kgsl.cc
+@@ -563,11 +563,18 @@ kgsl_is_memory_type_supported(int fd, uint32_t flags)
+       return false;
+    }
+ 
++   /* The kernel echoes back the *actual* flags it used. Some KGSL
++    * versions silently strip unsupported flags (e.g. IOCOHERENT on
++    * GPUs that lack IO-coherence) instead of failing the ioctl.
++    * Detect this by checking the requested bits are still present.
++    */
++   bool supported = (req_alloc.flags & flags) == flags;
++
+    struct kgsl_gpumem_free_id req_free = { .id = req_alloc.id };
+ 
+    safe_ioctl(fd, IOCTL_KGSL_GPUMEM_FREE_ID, &req_free);
+ 
+-   return true;
++   return supported;
+ }
+EOF_PATCH
     
-    if re.search(pattern, content):
-        print("Removed definition of tu_bo_init_new_cached from header.")
-        new_content = re.sub(pattern, "", content)
-        with open(file_path, 'w') as f:
-            f.write(new_content)
-EOF_PYTHON
-    python3 remove_cached_def.py
-
-    # 2. Substitui as chamadas no código: tu_bo_init_new_cached -> tu_bo_init_new
-    # Isso corrige o erro "undeclared identifier" redirecionando para a função padrão
-    echo -e "${green}Replacing usages in source files...${nocolor}"
-    find src/freedreno/vulkan -name "*.cc" -exec sed -i 's/tu_bo_init_new_cached/tu_bo_init_new/g' {} +
-    find src/freedreno/vulkan -name "*.c" -exec sed -i 's/tu_bo_init_new_cached/tu_bo_init_new/g' {} +
+    patch -p1 < kgsl_mem_fix.patch
 }
 
 compile_mesa() {
     local repo_url="https://gitlab.freedesktop.org/mesa/mesa.git"
     local branch="main"
-    local build_name="Turnip-Main-A6xxFix"
-    local output_tag="V92-Main-A6xxFix-Patched"
+    local build_name="Turnip-Main-KGSLFix"
+    local output_tag="V92-Main-KGSLFix-Patched"
 
     echo -e "${green}Cloning Mesa Main...${nocolor}"
     
@@ -72,8 +70,8 @@ compile_mesa() {
     cd mesa
     git config user.email "ci@turnip.builder" && git config user.name "Turnip CI Builder"
 
-    # APLICA O FIX COMPLETO (Remove def + Substitui chamadas)
-    apply_a6xx_fix
+    # APLICA O NOVO PATCH DO KGSL
+    apply_kgsl_patch
 
     echo -e "${green}Building: $build_name${nocolor}"
     
@@ -142,7 +140,7 @@ EOF
     echo "{
   \"schemaVersion\": 1,
   \"name\": \"$build_name\",
-  \"description\": \"Mesa Main + Revert tu_bo_init_new_cached (A6xx Fix)\",
+  \"description\": \"Mesa Main + KGSL Memory Type Patch\",
   \"author\": \"StevenMX\",
   \"packageVersion\": \"1\",
   \"vendor\": \"Mesa\",
