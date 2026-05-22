@@ -45,8 +45,7 @@ build_variant(){
         git checkout origin/turnip/gen8
         git config user.email "build@turnip.com"
         git config user.name "Builder"
-        git revert -n 9f96d9ae0939b8db2f131a47d4fe54a1782ed1e0 || true
-        git revert -n 60a14d62acb992ac343caf43de8b0e1efb41af6c || true
+        git revert -n 60a14d62acb992ac343caf43de8b0e1efb41af6 || true
         echo "#define TUGEN8_DRV_VERSION \"\"" > ./src/freedreno/vulkan/tu_version.h
 
     elif [ "$variant" == "A6xx" ]; then
@@ -60,8 +59,6 @@ build_variant(){
     elif [ "$variant" == "A7xx" ]; then
         git clone "https://gitlab.freedesktop.org/mesa/mesa.git" --depth=100 -b main mesa
         cd mesa
-        git config user.email "build@turnip.com"
-        git config user.name "Builder"
         git fetch origin refs/merge-requests/41451/head:mr
         git checkout mr
         sed -i '/a7xx_gen1 = GPUProps(/a \        has_early_preamble = False,' src/freedreno/common/freedreno_devices.py || true
@@ -69,8 +66,6 @@ build_variant(){
     elif [ "$variant" == "A7xx_OneUI" ]; then
         git clone "https://gitlab.freedesktop.org/mesa/mesa.git" --depth=100 -b main mesa
         cd mesa
-        git config user.email "build@turnip.com"
-        git config user.name "Builder"
         git fetch origin refs/merge-requests/41451/head:mr
         git checkout mr
         curl -sL "https://raw.githubusercontent.com/Other-backup/freedreno_turnip-CI/normal/8g2_ui_glitch.patch" -o 8g2_ui_glitch.patch
