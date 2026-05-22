@@ -13,6 +13,7 @@ run_all(){
     build_variant "A8xx"
     build_variant "A7xx"
     build_variant "A7xx_OneUI"
+    build_variant "A6xx"
 }
 
 check_deps(){
@@ -44,7 +45,9 @@ build_variant(){
         git checkout origin/turnip/gen8
         git config user.email "build@turnip.com"
         git config user.name "Builder"
-        git revert -n 60a14d62acb992ac343caf43de8b0e1efb41af6 || true
+        # Revert both commits (order matters: newest first)
+        git revert -n 9f96d9ae0939b8db2f131a47d4fe54a1782ed1e0 || true
+        git revert -n 60a14d62acb992ac343caf43de8b0e1efb41af6c || true
         echo "#define TUGEN8_DRV_VERSION \"\"" > ./src/freedreno/vulkan/tu_version.h
 
     elif [ "$variant" == "A7xx" ]; then
@@ -62,6 +65,16 @@ build_variant(){
         curl -sL "https://raw.githubusercontent.com/Other-backup/freedreno_turnip-CI/normal/8g2_ui_glitch.patch" -o 8g2_ui_glitch.patch
         patch -p1 < 8g2_ui_glitch.patch || true
         sed -i '/a7xx_gen1 = GPUProps(/a \        has_early_preamble = False,' src/freedreno/common/freedreno_devices.py || true
+
+    elif [ "$variant" == "A6xx" ]; then
+        git clone "https://gitlab.freedesktop.org/mesa/mesa.git" --depth=100 -b main mesa
+        cd mesa
+        git config user.email "build@turnip.com"
+        git config user.name "Builder"
+        # Revert MR 41323 commit (103887766cb288a7ec097af8c9f774ef6b0e1591)
+        git revert -n 103887766cb288a7ec097af8c9f774ef6b0e1591 || true
+        # Revert MR 35443 commit (83212054e07ba60dace89ee0c513eeb672228f2c)
+        git revert -n 83212054e07ba60dace89ee0c513eeb672228f2c || true
     fi
 
     sed -i 's/typedef const native_handle_t\* buffer_handle_t;/typedef void\* buffer_handle_t;/g' include/android_stub/cutils/native_handle.h || true
@@ -146,7 +159,7 @@ EOF
     fi
 
     cd "/tmp/turnip-$variant/lib"
-    
+
     if [ "$variant" == "A8xx" ]; then
         cat <<EOF >"meta.json"
 {
