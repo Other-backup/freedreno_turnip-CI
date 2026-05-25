@@ -1,158 +1,184 @@
 #!/bin/bash -e
 set -o pipefail
 
-green='\033[0;32m'
-nocolor='\033[0m'
-
-deps="ninja patchelf unzip curl pip flex bison zip git perl glslangValidator python3 patch"
+deps="git meson ninja patchelf unzip curl pip flex bison zip glslangValidator python3 patch"
 workdir="$(pwd)/turnip_workdir"
-ndkver="android-ndk-r28"
-target_sdk="36" 
+ndkver="android-ndk-r29"
+ndk="$workdir/$ndkver/toolchains/llvm/prebuilt/linux-x86_64/bin"
+BUILD_VERSION="${BUILD_VERSION:-1.0}"
+
+run_all(){
+    check_deps
+    prepare_workdir
+    build_variant "A8xx"
+    build_variant "A7xx"
+    build_variant "A7xx_OneUI"
+}
 
 check_deps(){
-	for dep in $deps; do
-		if ! command -v $dep >/dev/null 2>&1; then echo "Missing: $dep"; exit 1; fi
-	done
-	pip install meson mako --break-system-packages &> /dev/null || true
+    for deps_chk in $deps; do
+        if ! command -v "$deps_chk" >/dev/null 2>&1 ; then
+            exit 1
+        fi
+    done
+    pip install mako --break-system-packages &> /dev/null || true
 }
 
-prepare_ndk(){
-	mkdir -p "$workdir" && cd "$workdir"
-	if [ ! -d "$ndkver" ]; then
-		curl -L "https://dl.google.com/android/repository/${ndkver}-linux.zip" --output "${ndkver}-linux.zip" &> /dev/null
-		unzip -q "${ndkver}-linux.zip" &> /dev/null
-	fi
-    export ANDROID_NDK_HOME="$workdir/$ndkver"
+prepare_workdir(){
+    mkdir -p "$workdir" && cd "$workdir"
+
+    if [ ! -d "$ndkver" ]; then
+        curl -sL "https://dl.google.com/android/repository/${ndkver}-linux.zip" -o "${ndkver}-linux.zip" &> /dev/null
+        unzip -q "${ndkver}-linux.zip" &> /dev/null
+    fi
 }
 
-apply_kgsl_patch() {
-    echo -e "${green}Applying KGSL Memory Type Support Patch...${nocolor}"
-    
-    cat << 'EOF_PATCH' > kgsl_mem_fix.patch
-diff --git a/src/freedreno/vulkan/tu_knl_kgsl.cc b/src/freedreno/vulkan/tu_knl_kgsl.cc
---- a/src/freedreno/vulkan/tu_knl_kgsl.cc
-+++ b/src/freedreno/vulkan/tu_knl_kgsl.cc
-@@ -563,11 +563,18 @@ kgsl_is_memory_type_supported(int fd, uint32_t flags)
-       return false;
-    }
- 
-+   /* The kernel echoes back the *actual* flags it used. Some KGSL
-+    * versions silently strip unsupported flags (e.g. IOCOHERENT on
-+    * GPUs that lack IO-coherence) instead of failing the ioctl.
-+    * Detect this by checking the requested bits are still present.
-+    */
-+   bool supported = (req_alloc.flags & flags) == flags;
-+
-    struct kgsl_gpumem_free_id req_free = { .id = req_alloc.id };
- 
-    safe_ioctl(fd, IOCTL_KGSL_GPUMEM_FREE_ID, &req_free);
- 
--   return true;
-+   return supported;
- }
-EOF_PATCH
-    
-    patch -p1 < kgsl_mem_fix.patch
-}
-
-compile_mesa() {
-    local repo_url="https://gitlab.freedesktop.org/mesa/mesa.git"
-    local branch="main"
-    local build_name="Turnip-Main-KGSLFix"
-    local output_tag="V92-Main-KGSLFix-Patched"
-
-    echo -e "${green}Cloning Mesa Main...${nocolor}"
-    
+build_variant(){
+    local variant=$1
     cd "$workdir"
-    if [ -d mesa ]; then rm -rf mesa; fi
-    
-    git clone --depth 100 -b "$branch" "$repo_url" mesa
-    cd mesa
-    git config user.email "ci@turnip.builder" && git config user.name "Turnip CI Builder"
+    rm -rf mesa
 
-    # APLICA O NOVO PATCH DO KGSL
-    apply_kgsl_patch
+    if [ "$variant" == "A8xx" ]; then
+        git clone "https://github.com/whitebelyash/mesa-unified.git" --depth=100 --no-single-branch mesa
+        cd mesa
+        git checkout origin/turnip/gen8
+        git config user.email "build@turnip.com"
+        git config user.name "Builder"
+        git revert -n 60a14d62acb992ac343caf43de8b0e1efb41af6 || true
+        echo "#define TUGEN8_DRV_VERSION \"\"" > ./src/freedreno/vulkan/tu_version.h
 
-    echo -e "${green}Building: $build_name${nocolor}"
-    
-    mkdir -p subprojects && cd subprojects
-    rm -rf spirv-tools spirv-headers
-    git clone --depth=1 https://github.com/KhronosGroup/SPIRV-Tools.git spirv-tools
-    git clone --depth=1 https://github.com/KhronosGroup/SPIRV-Headers.git spirv-headers
-    cd ..
+    elif [ "$variant" == "A7xx" ]; then
+        git clone "https://gitlab.freedesktop.org/mesa/mesa.git" --depth=100 -b main mesa
+        cd mesa
+        git fetch origin refs/merge-requests/41451/head:mr
+        git checkout mr
+        sed -i '/a7xx_gen1 = GPUProps(/a \        has_early_preamble = False,' src/freedreno/common/freedreno_devices.py || true
 
-    local build_dir="$workdir/mesa/build"
-    rm -rf "$build_dir"
+    elif [ "$variant" == "A7xx_OneUI" ]; then
+        git clone "https://gitlab.freedesktop.org/mesa/mesa.git" --depth=100 -b main mesa
+        cd mesa
+        git fetch origin refs/merge-requests/41451/head:mr
+        git checkout mr
+        curl -sL "https://raw.githubusercontent.com/Other-backup/freedreno_turnip-CI/normal/8g2_ui_glitch.patch" -o 8g2_ui_glitch.patch
+        patch -p1 < 8g2_ui_glitch.patch || true
+        sed -i '/a7xx_gen1 = GPUProps(/a \        has_early_preamble = False,' src/freedreno/common/freedreno_devices.py || true
+    fi
 
-    local ndk_bin="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-    local ndk_sys="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
-    local cver="35"
-    [ ! -f "$ndk_bin/aarch64-linux-android${cver}-clang" ] && cver="34"
+    sed -i 's/typedef const native_handle_t\* buffer_handle_t;/typedef void\* buffer_handle_t;/g' include/android_stub/cutils/native_handle.h || true
+    sed -i 's/, hnd->handle/, (void \*)hnd->handle/g' src/util/u_gralloc/u_gralloc_fallback.c || true
+    sed -i 's/native_buffer->handle->/((const native_handle_t \*)native_buffer->handle)->/g' src/vulkan/runtime/vk_android.c || true
+    sed -i 's/anb->handle->/((const native_handle_t \*)anb->handle)->/g' src/vulkan/runtime/vk_android.c || true
 
-    cat <<EOF > android-cross.txt
+    find src/freedreno/vulkan -type f -name "*.c*" -exec sed -i 's/"Turnip Adreno (TM) %s[^"]*"/"Turnip Adreno (TM) %s%.0s"/g' {} + || true
+    find src/freedreno/vulkan -type f -name "*.c*" -exec sed -i 's/"turnip Mesa driver (whitebelyash branch)"/"Turnip"/g' {} + || true
+    find src/freedreno/vulkan -type f -name "*.c*" -exec sed -i 's/"turnip Mesa driver"/"Turnip"/g' {} + || true
+    find src/freedreno/vulkan -type f -name "*.c*" -exec sed -i 's/"Mesa " PACKAGE_VERSION MESA_GIT_SHA1/""/g' {} + || true
+
+    mkdir -p "$workdir/bin"
+    ln -sf "$ndk/clang" "$workdir/bin/cc"
+    ln -sf "$ndk/clang++" "$workdir/bin/c++"
+    export PATH="$workdir/bin:$ndk:$PATH"
+    export CC=clang
+    export CXX=clang++
+    export AR=llvm-ar
+    export RANLIB=llvm-ranlib
+    export STRIP=llvm-strip
+    export OBJDUMP=llvm-objdump
+    export OBJCOPY=llvm-objcopy
+    export LDFLAGS="-fuse-ld=lld"
+
+    local cver="36"
+    [ ! -f "$ndk/aarch64-linux-android${cver}-clang" ] && cver="35"
+    [ ! -f "$ndk/aarch64-linux-android${cver}-clang" ] && cver="34"
+
+    cat <<EOF >"android-aarch64.txt"
 [binaries]
-ar = '$ndk_bin/llvm-ar'
-c = ['ccache', '$ndk_bin/aarch64-linux-android${cver}-clang', '--sysroot=$ndk_sys']
-cpp = ['ccache', '$ndk_bin/aarch64-linux-android${cver}-clang++', '--sysroot=$ndk_sys']
-c_ld = 'lld'
-cpp_ld = 'lld'
-strip = '$ndk_bin/aarch64-linux-android-strip'
+ar = '$ndk/llvm-ar'
+c = ['$ndk/aarch64-linux-android${cver}-clang']
+cpp = ['$ndk/aarch64-linux-android${cver}-clang++', '-fno-exceptions', '-fno-unwind-tables', '-fno-asynchronous-unwind-tables', '--start-no-unused-arguments', '-static-libstdc++', '--end-no-unused-arguments']
+c_ld = '$ndk/ld.lld'
+cpp_ld = '$ndk/ld.lld'
+strip = '$ndk/llvm-strip'
+pkg-config = ['env', 'PKG_CONFIG_LIBDIR=$ndk/pkg-config', '/usr/bin/pkg-config']
+
 [host_machine]
 system = 'android'
 cpu_family = 'aarch64'
 cpu = 'armv8'
 endian = 'little'
-[built-in options]
-c_link_args = ['-static-libstdc++']
-cpp_link_args = ['-static-libstdc++']
 EOF
-    
-    export CFLAGS="-D__ANDROID__ -Wno-error -Wno-deprecated-declarations"
-    export CXXFLAGS="-D__ANDROID__ -Wno-error -Wno-deprecated-declarations"
 
-    meson setup "$build_dir" --cross-file android-cross.txt \
+    cat <<EOF >"native.txt"
+[build_machine]
+c = ['clang']
+cpp = ['clang++']
+ar = 'llvm-ar'
+strip = 'llvm-strip'
+c_ld = 'ld.lld'
+cpp_ld = 'ld.lld'
+system = 'linux'
+cpu_family = 'x86_64'
+cpu = 'x86_64'
+endian = 'little'
+EOF
+
+    meson setup build-android-aarch64 \
+        --cross-file "android-aarch64.txt" \
+        --native-file "native.txt" \
+        --prefix "/tmp/turnip-$variant" \
         -Dbuildtype=release \
+        -Dstrip=true \
         -Dplatforms=android \
+        -Dvideo-codecs= \
         -Dplatform-sdk-version=36 \
         -Dandroid-stub=true \
         -Dgallium-drivers= \
         -Dvulkan-drivers=freedreno \
+        -Dvulkan-beta=true \
         -Dfreedreno-kmds=kgsl \
         -Degl=disabled \
-        -Dglx=disabled \
-        -Dvulkan-beta=true \
-        -Ddefault_library=shared \
-        -Dzstd=disabled \
-        -Dwerror=false \
-        --force-fallback-for=spirv-tools,spirv-headers
-    
-    ninja -C "$build_dir"
+        -Dandroid-libbacktrace=disabled
 
-    local lib="$build_dir/src/freedreno/vulkan/libvulkan_freedreno.so"
-    if [ ! -f "$lib" ]; then echo "Build Failed"; exit 1; fi
+    ninja -C build-android-aarch64 install
+
+    if [ ! -f "/tmp/turnip-$variant/lib/libvulkan_freedreno.so" ]; then
+        exit 1
+    fi
+
+    cd "/tmp/turnip-$variant/lib"
     
-    local pkg_dir="$workdir/pkg_$output_tag"
-    mkdir -p "$pkg_dir"
-    cp "$lib" "$pkg_dir/vulkan.ad07XX.so"
-    cd "$pkg_dir"
-    patchelf --set-soname "vulkan.adreno.so" vulkan.ad07XX.so
-    
-    echo "{
-  \"schemaVersion\": 1,
-  \"name\": \"$build_name\",
-  \"description\": \"Mesa Main + KGSL Memory Type Patch\",
-  \"author\": \"StevenMX\",
-  \"packageVersion\": \"1\",
-  \"vendor\": \"Mesa\",
-  \"driverVersion\": \"$output_tag\",
-  \"minApi\": 28,
-  \"libraryName\": \"vulkan.ad07XX.so\"
-}" > meta.json
-    
-    zip -9 "$workdir/Turnip-${output_tag}.zip" vulkan.ad07XX.so meta.json
-    echo -e "${green}Done: Turnip-${output_tag}.zip${nocolor}"
+    if [ "$variant" == "A8xx" ]; then
+        cat <<EOF >"meta.json"
+{
+  "schemaVersion": 1,
+  "name": "Turnip Gen8 V29",
+  "description": "A8xx support",
+  "author": "stevenmx",
+  "packageVersion": "1",
+  "vendor": "Mesa",
+  "driverVersion": "Vulkan 1.4.348",
+  "minApi": 28,
+  "libraryName": "libvulkan_freedreno.so"
+}
+EOF
+    else
+        cat <<EOF >"meta.json"
+{
+  "schemaVersion": 1,
+  "name": "Turnip $variant",
+  "description": "Compiled variant: $variant",
+  "author": "stevenmx",
+  "packageVersion": "1",
+  "vendor": "Mesa",
+  "driverVersion": "Vulkan",
+  "minApi": 28,
+  "libraryName": "libvulkan_freedreno.so"
+}
+EOF
+    fi
+
+    zip -9 "/tmp/Turnip_${variant}_V${BUILD_VERSION}.zip" libvulkan_freedreno.so meta.json
+    cp "/tmp/Turnip_${variant}_V${BUILD_VERSION}.zip" "$workdir/"
 }
 
-check_deps
-prepare_ndk
-compile_mesa
+run_all
