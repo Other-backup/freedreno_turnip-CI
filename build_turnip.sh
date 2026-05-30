@@ -48,7 +48,7 @@ build_a7xx(){
     echo -e "${green}A aplicar MR 39751 via Patch...${nocolor}"
     curl -sL "https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/39751.patch" | patch -p1 --no-backup-if-mismatch || true
 
-    echo -e "${green}A corrigir escopo e extensões GNU do KGSL...${nocolor}"
+    echo -e "${green}A corrigir declarações e extensões GNU do KGSL...${nocolor}"
     cat << 'EOF_PYTHON' > fix_kgsl.py
 import re
 import sys
@@ -58,20 +58,33 @@ try:
     with open(file_path, 'r') as f:
         code = f.read()
 
-    # 1. Substitui a extensao GNU alignof(...) por alinhamento padrao seguro (8 bytes)
+    # 1. Substitui a extensão GNU alignof(...) por alinhamento seguro (8 bytes)
     code = re.sub(r'alignof\s*\(\s*\*profiling->[a-zA-Z0-9_]+\s*\)', '8', code)
 
-    # 2. Injeta a declaracao no TOPO da funcao, resolvendo o problema do laco (loop)
-    match = re.search(r'(kgsl_queue_submit\s*\([^{;]+?\)\s*\{)', code)
-    if match:
-        func_start = match.end()
-        if 'kgsl_profiling_alloc(&profiling' not in code[func_start:func_start+300]:
-            injection = "\n   struct kgsl_profiling profiling = {0};\n   kgsl_profiling_alloc(&profiling, queue, u_trace_submission_data);\n"
-            code = code[:func_start] + injection + code[func_start:]
+    # Limpa qualquer tentativa parcial do patch para não haver redefinições ou chamadas fantasmas
+    code = code.replace('struct kgsl_profiling profiling = {0};', '')
+    code = code.replace('kgsl_profiling_init(&profiling, queue, u_trace_submission_data);', '')
+    code = code.replace('kgsl_profiling_alloc(&profiling, queue, u_trace_submission_data);', '')
+
+    # 2. Injeta a declaração no TOPO absoluto da função, resolvendo problemas de loops/escopo
+    usage_idx = code.find('profiling.gpu_offset')
+    if usage_idx == -1:
+        usage_idx = code.find('profiling.cmd_obj')
+        
+    if usage_idx != -1:
+        # Procura a assinatura da função através do tipo estrutural exato do parâmetro
+        sig_idx = code.rfind('struct tu_u_trace_submission_data', 0, usage_idx)
+        if sig_idx != -1:
+            # Encontra a abertura do corpo da função '{'
+            brace_idx = code.find('{', sig_idx)
+            if brace_idx != -1 and brace_idx < usage_idx:
+                func_start = brace_idx + 1
+                injection = "\n   struct kgsl_profiling profiling = {0};\n   kgsl_profiling_alloc(&profiling, queue, u_trace_submission_data);\n"
+                code = code[:func_start] + injection + code[func_start:]
 
     with open(file_path, 'w') as f:
         f.write(code)
-    print("Fixes aplicados com sucesso!")
+    print("Fixes Python aplicados com sucesso!")
 except Exception as e:
     print(f"Erro no script Python: {e}")
     sys.exit(1)
