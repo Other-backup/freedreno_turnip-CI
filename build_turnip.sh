@@ -4,7 +4,7 @@ set -o pipefail
 green='\033[0;32m'
 nocolor='\033[0m'
 
-deps="git meson ninja patchelf unzip curl pip flex bison zip glslangValidator python3 patch awk sed"
+deps="git meson ninja patchelf unzip curl pip flex bison zip glslangValidator python3 patch"
 workdir="$(pwd)/turnip_workdir"
 ndkver="android-ndk-r29"
 ndk="$workdir/$ndkver/toolchains/llvm/prebuilt/linux-x86_64/bin"
@@ -48,30 +48,36 @@ build_a7xx(){
     echo -e "${green}A aplicar MR 39751 via Patch...${nocolor}"
     curl -sL "https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/39751.patch" | patch -p1 --no-backup-if-mismatch || true
 
-    echo -e "${green}A corrigir declarações perdidas e extensões GNU (Clang compatibility)...${nocolor}"
-    # 1. Remove qualquer lixo ou declaração injetada pela metade
-    sed -i '/struct kgsl_profiling profiling = {0};/d' src/freedreno/vulkan/tu_knl_kgsl.cc || true
-    sed -i '/kgsl_profiling_init(&profiling, queue, u_trace_submission_data);/d' src/freedreno/vulkan/tu_knl_kgsl.cc || true
+    echo -e "${green}A corrigir declarações e extensões GNU com Python...${nocolor}"
+    cat << 'EOF_PYTHON' > fix_kgsl.py
+import re
+import sys
 
-    # 2. Injeta a declaração e inicialização de forma dinâmica e segura logo na abertura da função
-    awk '
-    /struct tu_u_trace_submission_data \*u_trace_submission_data\)/ {
-        if (/{/) {
-            print;
-            print "   struct kgsl_profiling profiling = {0};\n   kgsl_profiling_init(&profiling, queue, u_trace_submission_data);";
-        } else {
-            print;
-            getline;
-            print;
-            if (/{/) {
-                print "   struct kgsl_profiling profiling = {0};\n   kgsl_profiling_init(&profiling, queue, u_trace_submission_data);";
-            }
-        }
-        next;
-    }1' src/freedreno/vulkan/tu_knl_kgsl.cc > tmp_kgsl && mv tmp_kgsl src/freedreno/vulkan/tu_knl_kgsl.cc
+file_path = 'src/freedreno/vulkan/tu_knl_kgsl.cc'
+try:
+    with open(file_path, 'r') as f:
+        code = f.read()
 
-    # 3. Substitui o comando `alignof(expressão)` (exclusivo do GNU GCC) por alinhamento seguro de 8 bytes
-    sed -i -E 's/alignof\(\*profiling->[a-zA-Z_]+\)/8/g' src/freedreno/vulkan/tu_knl_kgsl.cc || true
+    # 1. Substitui a extensao GNU alignof(...) por alinhamento seguro (8 bytes)
+    code = re.sub(r'alignof\s*\(\s*\*profiling->[a-zA-Z0-9_]+\s*\)', '8', code)
+
+    # 2. Encontra a funcao kgsl_queue_submit e injeta a inicializacao do profiling
+    # Isto resolve os erros de undeclared identifier causados pelas falhas do patch
+    match = re.search(r'(kgsl_queue_submit\s*\([^)]+\)\s*\{)', code)
+    if match:
+        # Só injeta se não existir já para evitar duplicações
+        if 'kgsl_profiling_alloc(&profiling' not in code[match.end():match.end()+200]:
+            injection = "\n   struct kgsl_profiling profiling = {0};\n   kgsl_profiling_alloc(&profiling, queue, u_trace_submission_data);\n"
+            code = code[:match.end()] + injection + code[match.end():]
+
+    with open(file_path, 'w') as f:
+        f.write(code)
+    print("Fix Python aplicado com sucesso!")
+except Exception as e:
+    print(f"Erro no fix Python: {e}")
+    sys.exit(1)
+EOF_PYTHON
+    python3 fix_kgsl.py
 
     echo -e "${green}A aplicar fix has_early_preamble para A7xx...${nocolor}"
     sed -i '/a7xx_gen1 = GPUProps(/a \        has_early_preamble = False,' src/freedreno/common/freedreno_devices.py || true
