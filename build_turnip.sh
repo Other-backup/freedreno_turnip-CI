@@ -4,7 +4,7 @@ set -o pipefail
 green='\033[0;32m'
 nocolor='\033[0m'
 
-deps="git meson ninja patchelf unzip curl pip flex bison zip glslangValidator python3 patch"
+deps="git meson ninja patchelf unzip curl pip flex bison zip glslangValidator python3 patch perl"
 workdir="$(pwd)/turnip_workdir"
 ndkver="android-ndk-r29"
 ndk="$workdir/$ndkver/toolchains/llvm/prebuilt/linux-x86_64/bin"
@@ -48,6 +48,10 @@ build_a7xx(){
     echo -e "${green}A aplicar MR 39751 via Patch...${nocolor}"
     curl -sL "https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/39751.patch" | patch -p1 --no-backup-if-mismatch || true
 
+    echo -e "${green}A corrigir declarações perdidas pelo Patch...${nocolor}"
+    # O patch falha em adicionar a declaração no topo devido a conflitos de contexto, injetamos manualmente antes do seu uso:
+    perl -pi -e 's/struct kgsl_gpu_command req = \{/struct kgsl_profiling profiling = \{0\};\n   kgsl_profiling_init(\&profiling, queue, u_trace_submission_data);\n   struct kgsl_gpu_command req = \{/g' src/freedreno/vulkan/tu_knl_kgsl.cc || true
+
     echo -e "${green}A aplicar fix has_early_preamble para A7xx...${nocolor}"
     sed -i '/a7xx_gen1 = GPUProps(/a \        has_early_preamble = False,' src/freedreno/common/freedreno_devices.py || true
 
@@ -84,8 +88,8 @@ build_a7xx(){
     cat <<EOF >"android-aarch64.txt"
 [binaries]
 ar = '$ndk/llvm-ar'
-c = ['$ndk/aarch64-linux-android${cver}-clang']
-cpp = ['$ndk/aarch64-linux-android${cver}-clang++', '-fno-exceptions', '-fno-unwind-tables', '-fno-asynchronous-unwind-tables', '--start-no-unused-arguments', '-static-libstdc++', '--end-no-unused-arguments']
+c = ['$ndk/aarch64-linux-android${cver}-clang', '-Wno-gnu-alignof-expression']
+cpp = ['$ndk/aarch64-linux-android${cver}-clang++', '-Wno-gnu-alignof-expression', '-fno-exceptions', '-fno-unwind-tables', '-fno-asynchronous-unwind-tables', '--start-no-unused-arguments', '-static-libstdc++', '--end-no-unused-arguments']
 c_ld = '$ndk/ld.lld'
 cpp_ld = '$ndk/ld.lld'
 strip = '$ndk/llvm-strip'
@@ -144,7 +148,7 @@ EOF
 {
   "schemaVersion": 1,
   "name": "Turnip A7xx",
-  "description": "A7xx com MR 39751",
+  "description": "A7xx com MR 39751 (KGSL Profiling)",
   "author": "stevenmx",
   "packageVersion": "1",
   "vendor": "Mesa",
