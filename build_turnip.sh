@@ -48,7 +48,7 @@ build_a7xx(){
     echo -e "${green}A aplicar MR 39751 via Patch...${nocolor}"
     curl -sL "https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/39751.patch" | patch -p1 --no-backup-if-mismatch || true
 
-    echo -e "${green}A corrigir declarações e extensões GNU do KGSL...${nocolor}"
+    echo -e "${green}A corrigir escopo e extensões GNU do KGSL...${nocolor}"
     cat << 'EOF_PYTHON' > fix_kgsl.py
 import re
 import sys
@@ -61,16 +61,13 @@ try:
     # 1. Substitui a extensao GNU alignof(...) por alinhamento padrao seguro (8 bytes)
     code = re.sub(r'alignof\s*\(\s*\*profiling->[a-zA-Z0-9_]+\s*\)', '8', code)
 
-    # 2. Encontra o ponto exato onde a variavel 'profiling' é usada
-    idx = code.find('profiling.cmd_obj')
-    if idx != -1:
-        # Volta para tras ate encontrar a estrutura de comando onde a variavel devia ter sido declarada
-        req_idx = code.rfind('struct kgsl_gpu_command', 0, idx)
-        if req_idx != -1:
-            # Só injeta se a declaracao ainda nao existir
-            if 'kgsl_profiling_alloc(&profiling' not in code[req_idx-200:req_idx+100]:
-                injection = "struct kgsl_profiling profiling = {0};\n   kgsl_profiling_alloc(&profiling, queue, u_trace_submission_data);\n\n   "
-                code = code[:req_idx] + injection + code[req_idx:]
+    # 2. Injeta a declaracao no TOPO da funcao, resolvendo o problema do laco (loop)
+    match = re.search(r'(kgsl_queue_submit\s*\([^{;]+?\)\s*\{)', code)
+    if match:
+        func_start = match.end()
+        if 'kgsl_profiling_alloc(&profiling' not in code[func_start:func_start+300]:
+            injection = "\n   struct kgsl_profiling profiling = {0};\n   kgsl_profiling_alloc(&profiling, queue, u_trace_submission_data);\n"
+            code = code[:func_start] + injection + code[func_start:]
 
     with open(file_path, 'w') as f:
         f.write(code)
