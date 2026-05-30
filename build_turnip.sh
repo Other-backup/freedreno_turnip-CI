@@ -48,7 +48,7 @@ build_a7xx(){
     echo -e "${green}A aplicar MR 39751 via Patch...${nocolor}"
     curl -sL "https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/39751.patch" | patch -p1 --no-backup-if-mismatch || true
 
-    echo -e "${green}A corrigir declarações e extensões GNU com Python...${nocolor}"
+    echo -e "${green}A corrigir declarações e extensões GNU do KGSL...${nocolor}"
     cat << 'EOF_PYTHON' > fix_kgsl.py
 import re
 import sys
@@ -58,23 +58,25 @@ try:
     with open(file_path, 'r') as f:
         code = f.read()
 
-    # 1. Substitui a extensao GNU alignof(...) por alinhamento seguro (8 bytes)
+    # 1. Substitui a extensao GNU alignof(...) por alinhamento padrao seguro (8 bytes)
     code = re.sub(r'alignof\s*\(\s*\*profiling->[a-zA-Z0-9_]+\s*\)', '8', code)
 
-    # 2. Encontra a funcao kgsl_queue_submit e injeta a inicializacao do profiling
-    # Isto resolve os erros de undeclared identifier causados pelas falhas do patch
-    match = re.search(r'(kgsl_queue_submit\s*\([^)]+\)\s*\{)', code)
-    if match:
-        # Só injeta se não existir já para evitar duplicações
-        if 'kgsl_profiling_alloc(&profiling' not in code[match.end():match.end()+200]:
-            injection = "\n   struct kgsl_profiling profiling = {0};\n   kgsl_profiling_alloc(&profiling, queue, u_trace_submission_data);\n"
-            code = code[:match.end()] + injection + code[match.end():]
+    # 2. Encontra o ponto exato onde a variavel 'profiling' é usada
+    idx = code.find('profiling.cmd_obj')
+    if idx != -1:
+        # Volta para tras ate encontrar a estrutura de comando onde a variavel devia ter sido declarada
+        req_idx = code.rfind('struct kgsl_gpu_command', 0, idx)
+        if req_idx != -1:
+            # Só injeta se a declaracao ainda nao existir
+            if 'kgsl_profiling_alloc(&profiling' not in code[req_idx-200:req_idx+100]:
+                injection = "struct kgsl_profiling profiling = {0};\n   kgsl_profiling_alloc(&profiling, queue, u_trace_submission_data);\n\n   "
+                code = code[:req_idx] + injection + code[req_idx:]
 
     with open(file_path, 'w') as f:
         f.write(code)
-    print("Fix Python aplicado com sucesso!")
+    print("Fixes aplicados com sucesso!")
 except Exception as e:
-    print(f"Erro no fix Python: {e}")
+    print(f"Erro no script Python: {e}")
     sys.exit(1)
 EOF_PYTHON
     python3 fix_kgsl.py
