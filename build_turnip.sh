@@ -50,15 +50,11 @@ build_variant(){
     elif [ "$variant" == "A7xx" ]; then
         git clone "https://gitlab.freedesktop.org/mesa/mesa.git" --depth=100 -b main mesa
         cd mesa
-        git fetch origin refs/merge-requests/41451/head:mr
-        git checkout mr
         sed -i '/a7xx_gen1 = GPUProps(/a \        has_early_preamble = False,' src/freedreno/common/freedreno_devices.py || true
 
     elif [ "$variant" == "A7xx_OneUI" ]; then
         git clone "https://gitlab.freedesktop.org/mesa/mesa.git" --depth=100 -b main mesa
         cd mesa
-        git fetch origin refs/merge-requests/41451/head:mr
-        git checkout mr
         curl -sL "https://raw.githubusercontent.com/Other-backup/freedreno_turnip-CI/normal/8g2_ui_glitch.patch" -o 8g2_ui_glitch.patch
         patch -p1 < 8g2_ui_glitch.patch || true
         sed -i '/a7xx_gen1 = GPUProps(/a \        has_early_preamble = False,' src/freedreno/common/freedreno_devices.py || true
