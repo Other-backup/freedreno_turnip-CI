@@ -4,7 +4,7 @@ set -o pipefail
 green='\033[0;32m'
 nocolor='\033[0m'
 
-deps="git meson ninja patchelf unzip curl pip flex bison zip glslangValidator python3"
+deps="git meson ninja patchelf unzip curl pip flex bison zip glslangValidator python3 patch"
 workdir="$(pwd)/turnip_workdir"
 ndkver="android-ndk-r29"
 ndk="$workdir/$ndkver/toolchains/llvm/prebuilt/linux-x86_64/bin"
@@ -13,7 +13,8 @@ BUILD_VERSION="${BUILD_VERSION:-1.0}"
 run_all(){
     check_deps
     prepare_workdir
-    build_a8xx
+    build_variant "A7xx"
+    build_variant "A7xx_OneUI"
 }
 
 check_deps(){
@@ -37,21 +38,23 @@ prepare_workdir(){
     fi
 }
 
-build_a8xx(){
+build_variant(){
+    local variant=$1
     cd "$workdir"
     rm -rf mesa
 
-    echo -e "${green}A clonar Mesa (A8xx - whitebelyash/mesa-unified)...${nocolor}"
-    git clone "https://github.com/whitebelyash/mesa-unified.git" --depth=100 --no-single-branch mesa
+    echo -e "${green}A clonar Mesa (Main) para $variant...${nocolor}"
+    git clone "https://gitlab.freedesktop.org/mesa/mesa.git" --depth=100 -b main mesa
     cd mesa
-    
-    echo -e "${green}A mudar para a branch gen8...${nocolor}"
-    git checkout origin/turnip/gen8
-    git config user.email "build@turnip.com"
-    git config user.name "Builder"
-    
-    echo -e "${green}A limpar a versão custom do driver...${nocolor}"
-    echo "#define TUGEN8_DRV_VERSION \"\"" > ./src/freedreno/vulkan/tu_version.h
+
+    echo -e "${green}A aplicar fix has_early_preamble para A7xx...${nocolor}"
+    sed -i '/a7xx_gen1 = GPUProps(/a \        has_early_preamble = False,' src/freedreno/common/freedreno_devices.py || true
+
+    if [ "$variant" == "A7xx_OneUI" ]; then
+        echo -e "${green}A aplicar Patch 8g2 UI Glitch (Exclusivo OneUI)...${nocolor}"
+        curl -sL "https://raw.githubusercontent.com/Other-backup/freedreno_turnip-CI/normal/8g2_ui_glitch.patch" -o 8g2_ui_glitch.patch
+        patch -p1 < 8g2_ui_glitch.patch || true
+    fi
 
     echo -e "${green}A corrigir Android Stubs...${nocolor}"
     sed -i 's/typedef const native_handle_t\* buffer_handle_t;/typedef void\* buffer_handle_t;/g' include/android_stub/cutils/native_handle.h || true
@@ -114,11 +117,11 @@ cpu = 'x86_64'
 endian = 'little'
 EOF
 
-    echo -e "${green}A executar Meson...${nocolor}"
+    echo -e "${green}A executar Meson para $variant...${nocolor}"
     meson setup build-android-aarch64 \
         --cross-file "android-aarch64.txt" \
         --native-file "native.txt" \
-        --prefix "/tmp/turnip-A8xx" \
+        --prefix "/tmp/turnip-$variant" \
         -Dbuildtype=release \
         -Dstrip=true \
         -Dplatforms=android \
@@ -132,35 +135,40 @@ EOF
         -Degl=disabled \
         -Dandroid-libbacktrace=disabled
 
-    echo -e "${green}A compilar com Ninja...${nocolor}"
+    echo -e "${green}A compilar $variant com Ninja...${nocolor}"
     ninja -C build-android-aarch64 install
 
-    if [ ! -f "/tmp/turnip-A8xx/lib/libvulkan_freedreno.so" ]; then
-        echo "Falha na compilação!"
+    if [ ! -f "/tmp/turnip-$variant/lib/libvulkan_freedreno.so" ]; then
+        echo "Falha na compilação do $variant!"
         exit 1
     fi
 
-    cd "/tmp/turnip-A8xx/lib"
+    cd "/tmp/turnip-$variant/lib"
     
+    local desc_text="A7xx Main"
+    if [ "$variant" == "A7xx_OneUI" ]; then
+        desc_text="A7xx (OneUI Fix) Main"
+    fi
+
     cat <<EOF >"meta.json"
 {
   "schemaVersion": 1,
-  "name": "Turnip Gen8 V29",
-  "description": "A8xx support",
+  "name": "Turnip $variant",
+  "description": "$desc_text",
   "author": "stevenmx",
   "packageVersion": "1",
   "vendor": "Mesa",
-  "driverVersion": "Vulkan 1.4.348",
+  "driverVersion": "Vulkan",
   "minApi": 28,
   "libraryName": "libvulkan_freedreno.so"
 }
 EOF
 
-    echo -e "${green}A empacotar ZIP...${nocolor}"
-    zip -9 "/tmp/Turnip_A8xx_V${BUILD_VERSION}.zip" libvulkan_freedreno.so meta.json
-    cp "/tmp/Turnip_A8xx_V${BUILD_VERSION}.zip" "$workdir/"
+    echo -e "${green}A empacotar ZIP para $variant...${nocolor}"
+    zip -9 "/tmp/Turnip_${variant}_V${BUILD_VERSION}.zip" libvulkan_freedreno.so meta.json
+    cp "/tmp/Turnip_${variant}_V${BUILD_VERSION}.zip" "$workdir/"
     
-    echo -e "${green}Concluído! Turnip_A8xx_V${BUILD_VERSION}.zip criado em $workdir${nocolor}"
+    echo -e "${green}Concluído! Turnip_${variant}_V${BUILD_VERSION}.zip criado em $workdir${nocolor}"
 }
 
 run_all
