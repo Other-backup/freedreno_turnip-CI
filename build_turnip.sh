@@ -4,7 +4,7 @@ set -o pipefail
 green='\033[0;32m'
 nocolor='\033[0m'
 
-deps="git meson ninja patchelf unzip curl pip flex bison zip glslangValidator python3 patch"
+deps="git meson ninja patchelf unzip curl pip flex bison zip glslangValidator python3"
 workdir="$(pwd)/turnip_workdir"
 ndkver="android-ndk-r29"
 ndk="$workdir/$ndkver/toolchains/llvm/prebuilt/linux-x86_64/bin"
@@ -13,7 +13,7 @@ BUILD_VERSION="${BUILD_VERSION:-1.0}"
 run_all(){
     check_deps
     prepare_workdir
-    build_a7xx
+    build_a8xx
 }
 
 check_deps(){
@@ -37,62 +37,21 @@ prepare_workdir(){
     fi
 }
 
-build_a7xx(){
+build_a8xx(){
     cd "$workdir"
     rm -rf mesa
 
-    echo -e "${green}A clonar Mesa (Main)...${nocolor}"
-    git clone "https://gitlab.freedesktop.org/mesa/mesa.git" --depth=100 -b main mesa
+    echo -e "${green}A clonar Mesa (A8xx - whitebelyash/mesa-unified)...${nocolor}"
+    git clone "https://github.com/whitebelyash/mesa-unified.git" --depth=100 --no-single-branch mesa
     cd mesa
-
-    echo -e "${green}A aplicar MR 39751 via Patch...${nocolor}"
-    curl -sL "https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/39751.patch" | patch -p1 --no-backup-if-mismatch || true
-
-    echo -e "${green}A corrigir declarações e extensões GNU do KGSL...${nocolor}"
-    cat << 'EOF_PYTHON' > fix_kgsl.py
-import re
-import sys
-
-file_path = 'src/freedreno/vulkan/tu_knl_kgsl.cc'
-try:
-    with open(file_path, 'r') as f:
-        code = f.read()
-
-    # 1. Substitui a extensão GNU alignof(...) por alinhamento seguro (8 bytes)
-    code = re.sub(r'alignof\s*\(\s*\*profiling->[a-zA-Z0-9_]+\s*\)', '8', code)
-
-    # Limpa qualquer tentativa parcial do patch para não haver redefinições ou chamadas fantasmas
-    code = code.replace('struct kgsl_profiling profiling = {0};', '')
-    code = code.replace('kgsl_profiling_init(&profiling, queue, u_trace_submission_data);', '')
-    code = code.replace('kgsl_profiling_alloc(&profiling, queue, u_trace_submission_data);', '')
-
-    # 2. Injeta a declaração no TOPO absoluto da função, resolvendo problemas de loops/escopo
-    usage_idx = code.find('profiling.gpu_offset')
-    if usage_idx == -1:
-        usage_idx = code.find('profiling.cmd_obj')
-        
-    if usage_idx != -1:
-        # Procura a assinatura da função através do tipo estrutural exato do parâmetro
-        sig_idx = code.rfind('struct tu_u_trace_submission_data', 0, usage_idx)
-        if sig_idx != -1:
-            # Encontra a abertura do corpo da função '{'
-            brace_idx = code.find('{', sig_idx)
-            if brace_idx != -1 and brace_idx < usage_idx:
-                func_start = brace_idx + 1
-                injection = "\n   struct kgsl_profiling profiling = {0};\n   kgsl_profiling_alloc(&profiling, queue, u_trace_submission_data);\n"
-                code = code[:func_start] + injection + code[func_start:]
-
-    with open(file_path, 'w') as f:
-        f.write(code)
-    print("Fixes Python aplicados com sucesso!")
-except Exception as e:
-    print(f"Erro no script Python: {e}")
-    sys.exit(1)
-EOF_PYTHON
-    python3 fix_kgsl.py
-
-    echo -e "${green}A aplicar fix has_early_preamble para A7xx...${nocolor}"
-    sed -i '/a7xx_gen1 = GPUProps(/a \        has_early_preamble = False,' src/freedreno/common/freedreno_devices.py || true
+    
+    echo -e "${green}A mudar para a branch gen8...${nocolor}"
+    git checkout origin/turnip/gen8
+    git config user.email "build@turnip.com"
+    git config user.name "Builder"
+    
+    echo -e "${green}A limpar a versão custom do driver...${nocolor}"
+    echo "#define TUGEN8_DRV_VERSION \"\"" > ./src/freedreno/vulkan/tu_version.h
 
     echo -e "${green}A corrigir Android Stubs...${nocolor}"
     sed -i 's/typedef const native_handle_t\* buffer_handle_t;/typedef void\* buffer_handle_t;/g' include/android_stub/cutils/native_handle.h || true
@@ -159,7 +118,7 @@ EOF
     meson setup build-android-aarch64 \
         --cross-file "android-aarch64.txt" \
         --native-file "native.txt" \
-        --prefix "/tmp/turnip-A7xx" \
+        --prefix "/tmp/turnip-A8xx" \
         -Dbuildtype=release \
         -Dstrip=true \
         -Dplatforms=android \
@@ -176,32 +135,32 @@ EOF
     echo -e "${green}A compilar com Ninja...${nocolor}"
     ninja -C build-android-aarch64 install
 
-    if [ ! -f "/tmp/turnip-A7xx/lib/libvulkan_freedreno.so" ]; then
+    if [ ! -f "/tmp/turnip-A8xx/lib/libvulkan_freedreno.so" ]; then
         echo "Falha na compilação!"
         exit 1
     fi
 
-    cd "/tmp/turnip-A7xx/lib"
+    cd "/tmp/turnip-A8xx/lib"
     
     cat <<EOF >"meta.json"
 {
   "schemaVersion": 1,
-  "name": "Turnip A7xx Main",
-  "description": "A7xx com MR 39751 (KGSL Profiling)",
+  "name": "Turnip Gen8 V29",
+  "description": "A8xx support",
   "author": "stevenmx",
   "packageVersion": "1",
   "vendor": "Mesa",
-  "driverVersion": "Vulkan",
+  "driverVersion": "Vulkan 1.4.348",
   "minApi": 28,
   "libraryName": "libvulkan_freedreno.so"
 }
 EOF
 
     echo -e "${green}A empacotar ZIP...${nocolor}"
-    zip -9 "/tmp/Turnip_A7xx_V${BUILD_VERSION}.zip" libvulkan_freedreno.so meta.json
-    cp "/tmp/Turnip_A7xx_V${BUILD_VERSION}.zip" "$workdir/"
+    zip -9 "/tmp/Turnip_A8xx_V${BUILD_VERSION}.zip" libvulkan_freedreno.so meta.json
+    cp "/tmp/Turnip_A8xx_V${BUILD_VERSION}.zip" "$workdir/"
     
-    echo -e "${green}Concluído! Turnip_A7xx_V${BUILD_VERSION}.zip criado em $workdir${nocolor}"
+    echo -e "${green}Concluído! Turnip_A8xx_V${BUILD_VERSION}.zip criado em $workdir${nocolor}"
 }
 
 run_all
