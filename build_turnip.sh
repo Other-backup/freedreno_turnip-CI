@@ -1,174 +1,52 @@
-#!/bin/bash -e
-set -o pipefail
+#!/usr/bin/env bash
+set -euo pipefail
 
-green='\033[0;32m'
-nocolor='\033[0m'
+WORKDIR="$HOME/mesa-dates"
+BUILDER="/caminho/para/o/seu/build.sh"   # ajuste aqui
 
-deps="git meson ninja patchelf unzip curl pip flex bison zip glslangValidator python3 patch"
-workdir="$(pwd)/turnip_workdir"
-ndkver="android-ndk-r29"
-ndk="$workdir/$ndkver/toolchains/llvm/prebuilt/linux-x86_64/bin"
-BUILD_VERSION="${BUILD_VERSION:-1.0}"
+mkdir -p "$WORKDIR"
 
-run_all(){
-    check_deps
-    prepare_workdir
-    build_variant "A7xx"
-    build_variant "A7xx_OneUI"
-}
+if [ ! -d "$WORKDIR/mesa" ]; then
+    git clone https://gitlab.freedesktop.org/mesa/mesa.git "$WORKDIR/mesa"
+fi
 
-check_deps(){
-    echo -e "${green}A verificar dependências...${nocolor}"
-    for deps_chk in $deps; do
-        if ! command -v "$deps_chk" >/dev/null 2>&1 ; then
-            echo "Falta a dependência: $deps_chk"
-            exit 1
-        fi
-    done
-    pip install mako --break-system-packages &> /dev/null || true
-}
+cd "$WORKDIR/mesa"
+git fetch origin
 
-prepare_workdir(){
-    echo -e "${green}A preparar ambiente de trabalho...${nocolor}"
-    mkdir -p "$workdir" && cd "$workdir"
+START="2026-07-09"
+END="2026-07-15"
 
-    if [ ! -d "$ndkver" ]; then
-        curl -sL "https://dl.google.com/android/repository/${ndkver}-linux.zip" -o "${ndkver}-linux.zip" &> /dev/null
-        unzip -q "${ndkver}-linux.zip" &> /dev/null
-    fi
-}
+count=0
 
-build_variant(){
-    local variant=$1
-    cd "$workdir"
-    rm -rf mesa
+for day in $(seq 9 15); do
+    date=$(printf "2026-07-%02d" "$day")
 
-    echo -e "${green}A clonar Mesa (Main) para $variant...${nocolor}"
-    git clone "https://gitlab.freedesktop.org/mesa/mesa.git" --depth=100 -b main mesa
-    cd mesa
+    commit=$(git rev-list -1 --before="${date} 23:59:59" origin/main)
 
-    echo -e "${green}A aplicar fix has_early_preamble para A7xx...${nocolor}"
-    sed -i '/a7xx_gen1 = GPUProps(/a \        has_early_preamble = False,' src/freedreno/common/freedreno_devices.py || true
-
-    if [ "$variant" == "A7xx_OneUI" ]; then
-        echo -e "${green}A aplicar Patch 8g2 UI Glitch (Exclusivo OneUI)...${nocolor}"
-        curl -sL "https://raw.githubusercontent.com/Other-backup/freedreno_turnip-CI/normal/8g2_ui_glitch.patch" -o 8g2_ui_glitch.patch
-        patch -p1 < 8g2_ui_glitch.patch || true
+    if [ -z "$commit" ]; then
+        continue
     fi
 
-    echo -e "${green}A corrigir Android Stubs...${nocolor}"
-    sed -i 's/typedef const native_handle_t\* buffer_handle_t;/typedef void\* buffer_handle_t;/g' include/android_stub/cutils/native_handle.h || true
-    sed -i 's/, hnd->handle/, (void \*)hnd->handle/g' src/util/u_gralloc/u_gralloc_fallback.c || true
-    sed -i 's/native_buffer->handle->/((const native_handle_t \*)native_buffer->handle)->/g' src/vulkan/runtime/vk_android.c || true
-    sed -i 's/anb->handle->/((const native_handle_t \*)anb->handle)->/g' src/vulkan/runtime/vk_android.c || true
+    git checkout -f "$commit"
 
-    echo -e "${green}A limpar nomes do driver...${nocolor}"
-    find src/freedreno/vulkan -type f -name "*.c*" -exec sed -i 's/"Turnip Adreno (TM) %s[^"]*"/"Turnip Adreno (TM) %s%.0s"/g' {} + || true
-    find src/freedreno/vulkan -type f -name "*.c*" -exec sed -i 's/"turnip Mesa driver (whitebelyash branch)"/"Turnip"/g' {} + || true
-    find src/freedreno/vulkan -type f -name "*.c*" -exec sed -i 's/"turnip Mesa driver"/"Turnip"/g' {} + || true
-    find src/freedreno/vulkan -type f -name "*.c*" -exec sed -i 's/"Mesa " PACKAGE_VERSION MESA_GIT_SHA1/""/g' {} + || true
+    short=$(git rev-parse --short HEAD)
 
-    echo -e "${green}A configurar compilador...${nocolor}"
-    mkdir -p "$workdir/bin"
-    ln -sf "$ndk/clang" "$workdir/bin/cc"
-    ln -sf "$ndk/clang++" "$workdir/bin/c++"
-    export PATH="$workdir/bin:$ndk:$PATH"
-    export CC=clang
-    export CXX=clang++
-    export AR=llvm-ar
-    export RANLIB=llvm-ranlib
-    export STRIP=llvm-strip
-    export OBJDUMP=llvm-objdump
-    export OBJCOPY=llvm-objcopy
-    export LDFLAGS="-fuse-ld=lld"
+    echo "===================================="
+    echo "Data   : $date"
+    echo "Commit : $short"
+    git log -1 --oneline
+    echo "===================================="
 
-    local cver="36"
-    [ ! -f "$ndk/aarch64-linux-android${cver}-clang" ] && cver="35"
-    [ ! -f "$ndk/aarch64-linux-android${cver}-clang" ] && cver="34"
+    MESA_SOURCE="$WORKDIR/mesa" \
+    BISECT_MODE=1 \
+    BUILD_VERSION="$date-$short" \
+    bash "$BUILDER"
 
-    cat <<EOF >"android-aarch64.txt"
-[binaries]
-ar = '$ndk/llvm-ar'
-c = ['$ndk/aarch64-linux-android${cver}-clang']
-cpp = ['$ndk/aarch64-linux-android${cver}-clang++', '-fno-exceptions', '-fno-unwind-tables', '-fno-asynchronous-unwind-tables', '--start-no-unused-arguments', '-static-libstdc++', '--end-no-unused-arguments']
-c_ld = '$ndk/ld.lld'
-cpp_ld = '$ndk/ld.lld'
-strip = '$ndk/llvm-strip'
-pkg-config = ['env', 'PKG_CONFIG_LIBDIR=$ndk/pkg-config', '/usr/bin/pkg-config']
+    count=$((count + 1))
 
-[host_machine]
-system = 'android'
-cpu_family = 'aarch64'
-cpu = 'armv8'
-endian = 'little'
-EOF
-
-    cat <<EOF >"native.txt"
-[build_machine]
-c = ['clang']
-cpp = ['clang++']
-ar = 'llvm-ar'
-strip = 'llvm-strip'
-c_ld = 'ld.lld'
-cpp_ld = 'ld.lld'
-system = 'linux'
-cpu_family = 'x86_64'
-cpu = 'x86_64'
-endian = 'little'
-EOF
-
-    echo -e "${green}A executar Meson para $variant...${nocolor}"
-    meson setup build-android-aarch64 \
-        --cross-file "android-aarch64.txt" \
-        --native-file "native.txt" \
-        --prefix "/tmp/turnip-$variant" \
-        -Dbuildtype=release \
-        -Dstrip=true \
-        -Dplatforms=android \
-        -Dvideo-codecs= \
-        -Dplatform-sdk-version=36 \
-        -Dandroid-stub=true \
-        -Dgallium-drivers= \
-        -Dvulkan-drivers=freedreno \
-        -Dvulkan-beta=true \
-        -Dfreedreno-kmds=kgsl \
-        -Degl=disabled \
-        -Dandroid-libbacktrace=disabled
-
-    echo -e "${green}A compilar $variant com Ninja...${nocolor}"
-    ninja -C build-android-aarch64 install
-
-    if [ ! -f "/tmp/turnip-$variant/lib/libvulkan_freedreno.so" ]; then
-        echo "Falha na compilação do $variant!"
-        exit 1
+    if [ "$count" -ge 5 ]; then
+        echo "Foram compilados 5 Turnips."
+        echo "Teste-os e depois execute o script novamente para os próximos."
+        break
     fi
-
-    cd "/tmp/turnip-$variant/lib"
-    
-    local desc_text="A7xx Main"
-    if [ "$variant" == "A7xx_OneUI" ]; then
-        desc_text="A7xx (OneUI Fix) Main"
-    fi
-
-    cat <<EOF >"meta.json"
-{
-  "schemaVersion": 1,
-  "name": "Turnip $variant",
-  "description": "$desc_text",
-  "author": "stevenmx",
-  "packageVersion": "1",
-  "vendor": "Mesa",
-  "driverVersion": "Vulkan",
-  "minApi": 28,
-  "libraryName": "libvulkan_freedreno.so"
-}
-EOF
-
-    echo -e "${green}A empacotar ZIP para $variant...${nocolor}"
-    zip -9 "/tmp/Turnip_${variant}_V${BUILD_VERSION}.zip" libvulkan_freedreno.so meta.json
-    cp "/tmp/Turnip_${variant}_V${BUILD_VERSION}.zip" "$workdir/"
-    
-    echo -e "${green}Concluído! Turnip_${variant}_V${BUILD_VERSION}.zip criado em $workdir${nocolor}"
-}
-
-run_all
+done
