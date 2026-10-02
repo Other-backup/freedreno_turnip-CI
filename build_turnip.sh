@@ -21,7 +21,6 @@ run_all() {
     prepare_workdir
     build_variant "A7xx"
     build_variant "A7xx_OneUI"
-    build_variant "A8xx"
 }
 
 check_deps() {
