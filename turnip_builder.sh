@@ -46,6 +46,7 @@ compile_mesa() {
     # Merge into main
     git merge mr-39751 --no-edit
 
+    # Revert the D32S8 EARLY_Z_LATE_Z workaround used by A7xx.\n    # Keep the existing A8xx MR39751/native-timeline pipeline unchanged otherwise.\n    local revert_commit="a70d2af590db192f87b3af01f83a68b450edb4c3"\n    echo -e "${green}Reverting D32S8 EARLY_Z_LATE_Z workaround for A8xx...${nocolor}"\n\n    if ! git cat-file -e "$revert_commit^{commit}" 2>/dev/null; then\n        git fetch --deepen=2000 origin main || true\n    fi\n\n    if ! git cat-file -e "$revert_commit^{commit}" 2>/dev/null; then\n        git fetch --unshallow origin main 2>/dev/null ||\n            git fetch origin main --depth=100000\n    fi\n\n    if ! git cat-file -e "$revert_commit^{commit}" 2>/dev/null; then\n        echo "Could not find commit to revert: $revert_commit"\n        exit 1\n    fi\n\n    if ! git merge-base --is-ancestor "$revert_commit" HEAD; then\n        echo "D32S8 commit is not an ancestor of the merged A8xx checkout."\n        echo "HEAD: $(git rev-parse HEAD)"\n        exit 1\n    fi\n\n    if ! git revert --no-commit "$revert_commit"; then\n        git revert --abort 2>/dev/null || true\n        git reset --hard HEAD\n        echo "Failed to revert $revert_commit"\n        exit 1\n    fi\n\n    echo -e "${green}D32S8 workaround reverted successfully.${nocolor}"\n
     echo -e "${green}Building: $build_name${nocolor}"
     
     mkdir -p subprojects && cd subprojects
