@@ -21,6 +21,7 @@ run_all() {
     prepare_workdir
     build_variant "A7xx"
     build_variant "A7xx_OneUI"
+    build_variant "A8xx"
 }
 
 check_deps() {
@@ -127,9 +128,10 @@ build_variant() {
 
     revert_d32s8_commit
 
-    echo -e "${green}A aplicar fix has_early_preamble para A7xx...${nocolor}"
+    if [ "$variant" = "A7xx" ] || [ "$variant" = "A7xx_OneUI" ]; then
+        echo -e "${green}A aplicar fix has_early_preamble para A7xx...${nocolor}"
 
-    if grep -q 'a7xx_gen1 = GPUProps(' \
+        if grep -q 'a7xx_gen1 = GPUProps(' \
         src/freedreno/common/freedreno_devices.py; then
 
         if ! grep -A20 'a7xx_gen1 = GPUProps(' \
@@ -139,6 +141,7 @@ build_variant() {
             sed -i \
                 '/a7xx_gen1 = GPUProps(/a \        has_early_preamble = False,' \
                 src/freedreno/common/freedreno_devices.py
+        fi
         fi
     fi
 
